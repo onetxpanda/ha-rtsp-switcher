@@ -1,3 +1,9 @@
+## 2.1.4
+- Replace width/height/framerate inputs with a single YouTube resolution dropdown (360p–4K/2160p60)
+- Replace bitrate kbps input with Mbps dropdown (2–50 Mbps); values stored as kbps internally
+- Framerate is now part of the resolution preset per YouTube's supported ingestion specs
+- Shows "Custom" option if existing settings don't match any preset
+
 ## 2.1.3
 - Color the YouTube status strip by state: green when live and healthy, yellow for warnings, red for errors/no-data, grey when idle
 

@@ -695,6 +695,41 @@ function CameraTab({ config, onConfigChange, showToast }) {
   );
 }
 
+// ── YouTube stream presets ────────────────────────────────────────────────────
+const YT_RESOLUTIONS = [
+  { label: '360p',    width: 640,  height: 360,  fps: 30 },
+  { label: '480p',    width: 854,  height: 480,  fps: 30 },
+  { label: '720p30',  width: 1280, height: 720,  fps: 30 },
+  { label: '720p60',  width: 1280, height: 720,  fps: 60 },
+  { label: '1080p30', width: 1920, height: 1080, fps: 30 },
+  { label: '1080p60', width: 1920, height: 1080, fps: 60 },
+  { label: '1440p30', width: 2560, height: 1440, fps: 30 },
+  { label: '1440p60', width: 2560, height: 1440, fps: 60 },
+  { label: '4K / 2160p30', width: 3840, height: 2160, fps: 30 },
+  { label: '4K / 2160p60', width: 3840, height: 2160, fps: 60 },
+];
+const YT_BITRATES = [
+  { label: '2 Mbps',  kbps: 2000  },
+  { label: '3 Mbps',  kbps: 3000  },
+  { label: '4 Mbps',  kbps: 4000  },
+  { label: '6 Mbps',  kbps: 6000  },
+  { label: '8 Mbps',  kbps: 8000  },
+  { label: '10 Mbps', kbps: 10000 },
+  { label: '12 Mbps', kbps: 12000 },
+  { label: '15 Mbps', kbps: 15000 },
+  { label: '20 Mbps', kbps: 20000 },
+  { label: '25 Mbps', kbps: 25000 },
+  { label: '30 Mbps', kbps: 30000 },
+  { label: '35 Mbps', kbps: 35000 },
+  { label: '50 Mbps', kbps: 50000 },
+];
+function findResolution(w, h, fps) {
+  return YT_RESOLUTIONS.find(r => r.width === w && r.height === h && r.fps === fps) || null;
+}
+function findBitrate(kbps) {
+  return YT_BITRATES.find(b => b.kbps === kbps) || null;
+}
+
 // ── Settings tab ──────────────────────────────────────────────────────────────
 function SettingsTab({ config, onConfigChange, showToast }) {
   const [form, setForm] = useState(null);
@@ -703,6 +738,18 @@ function SettingsTab({ config, onConfigChange, showToast }) {
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const num = (k, v) => set(k, parseInt(v) || 0);
+
+  const currentRes = findResolution(form.output_width, form.output_height, form.output_framerate);
+  const currentBr  = findBitrate(form.video_bitrate_kbps);
+
+  const setResolution = (label) => {
+    const r = YT_RESOLUTIONS.find(x => x.label === label);
+    if (r) setForm(f => ({ ...f, output_width: r.width, output_height: r.height, output_framerate: r.fps }));
+  };
+  const setBitrate = (label) => {
+    const b = YT_BITRATES.find(x => x.label === label);
+    if (b) setForm(f => ({ ...f, video_bitrate_kbps: b.kbps }));
+  };
 
   const handleSave = async () => {
     const ok = await saveConfig(form);
@@ -717,10 +764,20 @@ function SettingsTab({ config, onConfigChange, showToast }) {
           <h2>Stream Output</h2>
           <div className="form-grid">
             <div className="field field-full"><label>RTMP URL</label><input value={form.rtmp_url || ''} onChange={e => set('rtmp_url', e.target.value)} placeholder="rtmp://a.rtmp.youtube.com/live2/..." /></div>
-            <div className="field"><label>Output Width</label><input type="number" value={form.output_width || ''} onChange={e => num('output_width', e.target.value)} /></div>
-            <div className="field"><label>Output Height</label><input type="number" value={form.output_height || ''} onChange={e => num('output_height', e.target.value)} /></div>
-            <div className="field"><label>Video Bitrate (kbps)</label><input type="number" value={form.video_bitrate_kbps || ''} onChange={e => num('video_bitrate_kbps', e.target.value)} /></div>
-            <div className="field"><label>Output Framerate</label><input type="number" value={form.output_framerate || ''} onChange={e => num('output_framerate', e.target.value)} /></div>
+            <div className="field">
+              <label>Resolution</label>
+              <select value={currentRes?.label || ''} onChange={e => setResolution(e.target.value)}>
+                {!currentRes && <option value="">Custom ({form.output_width}x{form.output_height} @ {form.output_framerate}fps)</option>}
+                {YT_RESOLUTIONS.map(r => <option key={r.label} value={r.label}>{r.label}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Video Bitrate</label>
+              <select value={currentBr?.label || ''} onChange={e => setBitrate(e.target.value)}>
+                {!currentBr && <option value="">Custom ({form.video_bitrate_kbps} kbps)</option>}
+                {YT_BITRATES.map(b => <option key={b.label} value={b.label}>{b.label}</option>)}
+              </select>
+            </div>
           </div>
         </div>
         <div className="card">
