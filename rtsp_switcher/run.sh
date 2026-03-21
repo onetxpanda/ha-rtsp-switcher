@@ -1,4 +1,4 @@
-#!/usr/bin/with-contenv bashio
+#!/bin/bash
 
 export LIBVA_DRIVER_NAME=iHD
 export LIBVA_DRM_DEVICE=/dev/dri/renderD128
@@ -13,7 +13,7 @@ SETTINGS_FILE=${CONFIG_DIR}/settings.yaml
 mkdir -p "${CONFIG_DIR}"
 
 if [ ! -f "${SETTINGS_FILE}" ]; then
-    bashio::log.warning "No settings.yaml found. Creating one from the example at ${SETTINGS_FILE} — edit it before starting the addon."
+    echo "WARNING: No settings.yaml found. Creating one from the example at ${SETTINGS_FILE} — edit it before starting the addon."
     cp /app/settings.yaml.example "${SETTINGS_FILE}"
 fi
 
