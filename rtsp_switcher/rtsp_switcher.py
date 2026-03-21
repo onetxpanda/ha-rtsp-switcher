@@ -406,7 +406,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; f
 .yt-strip.s-live    { background: rgba(62,207,142,.22); border-color: rgba(62,207,142,.55); }
 .yt-strip.s-warn    { background: rgba(245,166,35,.22); border-color: rgba(245,166,35,.55); }
 .yt-strip.s-error   { background: rgba(224,85,85,.22);  border-color: rgba(224,85,85,.55); }
-.yt-strip-time { font-size: 12px; color: var(--muted); }
+.yt-strip-time { font-size: 12px; color: #fff; }
 .yt-health-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: #f5a623; }
 .yt-health-err  { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--danger); }
 .issue-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
@@ -543,15 +543,9 @@ function YtStrip({ yt }) {
     <div className={`yt-strip ${stripCls}`}>
       <span className={`yt-status-badge ${live ? 'live' : 'idle'}`}>{live ? 'Live' : 'Idle'}</span>
       {live && yt.started_at && (
-        <span className="yt-strip-time">since {fmtTime(yt.started_at)} &middot; {fmtElapsed(yt.started_at)}</span>
-      )}
-      {!live && yt.ended_at && (
-        <span className="yt-strip-time">ended {fmtTime(yt.ended_at)}</span>
+        <span className="yt-strip-time">{fmtElapsed(yt.started_at)}</span>
       )}
       {live && <HealthWarn health={yt.stream_health} issues={yt.stream_issues} />}
-      {live && yt.title && (
-        <span className="yt-strip-time" style={{ marginLeft: 'auto', maxWidth: '50%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{yt.title}</span>
-      )}
     </div>
   );
 }

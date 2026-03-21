@@ -1,3 +1,7 @@
+## 2.2.5
+- Status strip: show elapsed time only (no start date), remove broadcast title
+- Status strip: text outside the badge is now white
+
 ## 2.2.4
 - Increase button size (padding + font-size) for Edit/Delete/action buttons
 - Increase tab bar icon sizes and tab padding
