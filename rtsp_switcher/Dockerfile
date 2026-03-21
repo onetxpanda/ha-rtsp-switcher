@@ -21,8 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-plugins-bad \
     gstreamer1.0-plugins-ugly \
     gstreamer1.0-libav \
-    # VA-API (vah264dec/enc in plugins-bad; older vaapi plugin)
-    gstreamer1.0-vaapi \
     # Intel iHD media driver
     intel-media-va-driver-non-free \
     libva-drm2 \
