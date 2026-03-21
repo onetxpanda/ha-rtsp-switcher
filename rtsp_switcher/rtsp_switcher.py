@@ -155,22 +155,17 @@ function Toast({ toast }) {
 
 // ── Snapshot image ────────────────────────────────────────────────────────────
 function Snapshot({ ts }) {
-  const [state, setState] = useState('loading'); // loading | ok | error
-  useEffect(() => setState('loading'), [ts]);
+  const [ok, setOk] = useState(false);
   return (
     <div className="snapshot-wrap">
       <img
         src={`${BASE}/api/snapshot?t=${ts}`}
-        style={{ display: state === 'ok' ? 'block' : 'none' }}
-        onLoad={() => setState('ok')}
-        onError={() => setState('error')}
+        style={{ display: ok ? 'block' : 'none' }}
+        onLoad={() => setOk(true)}
+        onError={() => setOk(false)}
         alt="Live snapshot"
       />
-      {state !== 'ok' && (
-        <span className="snapshot-placeholder">
-          {state === 'loading' ? 'Loading\u2026' : 'No snapshot available'}
-        </span>
-      )}
+      {!ok && <span className="snapshot-placeholder">No snapshot available</span>}
     </div>
   );
 }
