@@ -334,7 +334,7 @@ class HomeAssistantListener(threading.Thread):
     def _sync_entity(self):
         stream_names = [s["stream_name"] for s in STREAM_URLS]
         try:
-            self._client.call_service(
+            self._client.trigger_service(
                 "input_select", "set_options",
                 entity_id=HA_ENTITY_ID,
                 options=stream_names,
