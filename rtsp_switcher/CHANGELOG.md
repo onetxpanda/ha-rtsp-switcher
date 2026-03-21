@@ -1,3 +1,8 @@
+## 2.1.1
+- Show RTMP stream health in status strip: warning/error indicator when YouTube reports bad or missing stream data
+- Show configuration issues from YouTube (with severity) in the YouTube tab status card
+- Poll liveStream healthStatus and configurationIssues on every status check
+
 ## 2.1.0
 - Replace tab text with icons (camera, YouTube logo, settings gear)
 - Add persistent YouTube status strip below tab bar: live/idle badge, start time, elapsed duration, broadcast title

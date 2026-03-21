@@ -190,10 +190,18 @@ class YouTubeManager(threading.Thread):
 
     def _get_active_broadcast(self) -> dict | None:
         result = self._api_get("liveBroadcasts", {
-            "part": "snippet,status", "broadcastStatus": "active",
+            "part": "snippet,status,contentDetails", "broadcastStatus": "active",
         })
         items = (result or {}).get("items", [])
         return items[0] if items else None
+
+    def _get_stream_health(self, stream_id: str) -> dict:
+        """Returns healthStatus dict from the liveStream, or {} on failure."""
+        result = self._api_get("liveStreams", {"part": "status", "id": stream_id})
+        items = (result or {}).get("items", [])
+        if not items:
+            return {}
+        return items[0].get("status", {}).get("healthStatus", {})
 
     def _get_live_stream(self) -> dict | None:
         """Find the liveStream whose streamName matches our RTMP stream key."""
@@ -308,13 +316,15 @@ class YouTubeManager(threading.Thread):
             active = self._get_active_broadcast()
             if active:
                 snippet = active.get("snippet", {})
+                stream_id = active.get("contentDetails", {}).get("boundStreamId")
+                health = self._get_stream_health(stream_id) if stream_id else {}
                 with self._lock:
-                    prev_live = self._status.get("live", False)
                     self._status = {
                         "live": True,
                         "broadcast_id": active.get("id"),
                         "title": snippet.get("title"),
-                        "stream_health": None,
+                        "stream_health": health.get("status"),
+                        "stream_issues": health.get("configurationIssues", []),
                         "last_error": None,
                         "started_at": snippet.get("actualStartTime"),
                         "ended_at": self._status.get("ended_at"),
@@ -324,7 +334,8 @@ class YouTubeManager(threading.Thread):
                     prev_live = self._status.get("live", False)
                     ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if prev_live else self._status.get("ended_at")
                     self._status = {
-                        "live": False, "broadcast_id": None, "title": None, "stream_health": None,
+                        "live": False, "broadcast_id": None, "title": None,
+                        "stream_health": None, "stream_issues": [],
                         "last_error": None, "started_at": None, "ended_at": ended_at,
                     }
                     auto = self._auto_restart
@@ -390,6 +401,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; f
 .tab svg { display: block; }
 .yt-strip { display: flex; align-items: center; gap: 10px; padding: 7px 14px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; min-height: 36px; }
 .yt-strip-time { font-size: 11px; color: var(--muted); }
+.yt-health-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: #f5a623; }
+.yt-health-err  { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--danger); }
+.issue-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.issue-row { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 6px; font-size: 12px; }
+.issue-row.warning { background: rgba(245,166,35,.08); border: 1px solid rgba(245,166,35,.25); color: #f5a623; }
+.issue-row.error   { background: rgba(224,85,85,.08);  border: 1px solid rgba(224,85,85,.25);  color: var(--danger); }
+.issue-reason { color: var(--text); font-size: 12px; }
 .content { flex: 1; min-height: 0; overflow-y: auto; }
 .snapshot-outer { width: 100%; aspect-ratio: 16/9; background: #000; position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .snapshot-outer img { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -487,6 +505,22 @@ function fmtElapsed(iso) {
 }
 
 // ── YouTube status strip ──────────────────────────────────────────────────────
+function HealthWarn({ health, issues }) {
+  if (!health || health === 'good' || health === 'ok') return null;
+  const isErr = health === 'bad' || health === 'noData';
+  const cls = isErr ? 'yt-health-err' : 'yt-health-warn';
+  const label = health === 'noData' ? 'No stream data' : `Stream ${health}`;
+  const errorCount = (issues || []).filter(i => i.severity === 'error').length;
+  const warnCount  = (issues || []).filter(i => i.severity === 'warning').length;
+  const detail = [errorCount && `${errorCount} error${errorCount > 1 ? 's' : ''}`, warnCount && `${warnCount} warning${warnCount > 1 ? 's' : ''}`].filter(Boolean).join(', ');
+  return (
+    <span className={cls}>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm0 3.5L20.5 19h-17L12 5.5zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>
+      {label}{detail ? ` · ${detail}` : ''}
+    </span>
+  );
+}
+
 function YtStrip({ yt }) {
   const [, tick] = useState(0);
   useEffect(() => { const id = setInterval(() => tick(n => n + 1), 30000); return () => clearInterval(id); }, []);
@@ -501,6 +535,7 @@ function YtStrip({ yt }) {
       {!live && yt.ended_at && (
         <span className="yt-strip-time">ended {fmtTime(yt.ended_at)}</span>
       )}
+      {live && <HealthWarn health={yt.stream_health} issues={yt.stream_issues} />}
       {live && yt.title && (
         <span className="yt-strip-time" style={{ marginLeft: 'auto', maxWidth: '50%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{yt.title}</span>
       )}
@@ -791,9 +826,19 @@ function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
             <span className={`yt-status-badge ${live ? 'live' : 'idle'}`}>{live ? 'Live' : 'Idle'}</span>
           </div>
           {yt?.title && <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 4 }}>{yt.title}</div>}
-          {live && yt?.started_at && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>Started {fmtTime(yt.started_at)} &middot; {fmtElapsed(yt.started_at)}</div>}
-          {!live && yt?.ended_at && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>Ended {fmtTime(yt.ended_at)}</div>}
+          {live && yt?.started_at && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Started {fmtTime(yt.started_at)} &middot; {fmtElapsed(yt.started_at)}</div>}
+          {!live && yt?.ended_at && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Ended {fmtTime(yt.ended_at)}</div>}
           {!configured && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>Not authorised — complete OAuth setup below.</div>}
+          {live && yt?.stream_issues?.length > 0 && (
+            <div className="issue-list">
+              {yt.stream_issues.map((issue, i) => (
+                <div key={i} className={`issue-row ${issue.severity || 'warning'}`}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0, marginTop: 1 }}><path d="M12 2L1 21h22L12 2zm0 3.5L20.5 19h-17L12 5.5zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>
+                  <span className="issue-reason">{issue.reason || issue.type}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: yt?.last_error ? 10 : 0 }}>
             <button className="btn btn-primary" onClick={doRestart} disabled={restarting || !configured}>
               {restarting ? 'Restarting\u2026' : 'Restart Broadcast'}
