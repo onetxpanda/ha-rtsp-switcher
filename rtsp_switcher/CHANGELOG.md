@@ -1,3 +1,7 @@
+## 2.2.4
+- Increase button size (padding + font-size) for Edit/Delete/action buttons
+- Increase tab bar icon sizes and tab padding
+
 ## 2.2.3
 - Increase all text sizes by 1px
 
