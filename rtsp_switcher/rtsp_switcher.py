@@ -73,79 +73,57 @@ _WEBUI_HTML = """<!DOCTYPE html>
   --bg: #0f1117; --surface: #181b26; --surface2: #1e2130; --border: #272b3d;
   --text: #dde1f0; --muted: #6b6f8a; --accent: #5b8cf8; --danger: #e05555; --success: #3ecf8e;
 }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; }
-.sidebar { width: 192px; min-width: 192px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 0; }
-.sidebar-header { padding: 22px 20px 18px; border-bottom: 1px solid var(--border); }
-.sidebar-title { font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-.nav-item { display: flex; align-items: center; padding: 11px 20px; cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 500; border-left: 2px solid transparent; transition: color .12s, background .12s; }
-.nav-item:hover { color: var(--text); background: var(--surface2); }
-.nav-item.active { color: var(--accent); border-left-color: var(--accent); background: rgba(91,140,248,.07); }
-.main { flex: 1; overflow-y: auto; padding: 32px 36px; }
-h1 { font-size: 17px; font-weight: 600; margin-bottom: 24px; color: #fff; }
-h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 14px; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
-.snapshot-wrap { background: #000; border-radius: 6px; overflow: hidden; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; margin-bottom: 14px; position: relative; }
-.snapshot-wrap img { width: 100%; height: 100%; object-fit: contain; display: block; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.tabbar { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
+.tab { padding: 14px 22px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .12s; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.content { flex: 1; overflow-y: auto; }
+.snapshot-outer { width: 100%; aspect-ratio: 16/9; background: #000; position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.snapshot-outer img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .snapshot-placeholder { color: var(--muted); font-size: 13px; position: absolute; }
-.badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
-.badge-live { background: rgba(62,207,142,.12); color: var(--success); }
-.badge-idle { background: rgba(107,111,138,.12); color: var(--muted); }
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.camera-section { padding: 12px 16px 20px; }
+.camera-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.camera-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; transition: background .12s, border-color .12s; user-select: none; }
+.camera-row:hover { background: var(--surface2); }
+.camera-row.active { background: rgba(62,207,142,.07); border-color: rgba(62,207,142,.25); }
+.camera-name { font-size: 13px; font-weight: 500; color: var(--text); flex: 1; }
+.live-dot { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--success); white-space: nowrap; }
+.live-dot::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: block; }
+.cam-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.settings-content { padding: 20px 16px; }
+h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 12px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 14px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field-full { grid-column: 1 / -1; }
 label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 input, select { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; color: var(--text); font-size: 13px; outline: none; width: 100%; transition: border-color .12s; }
 input:focus, select:focus { border-color: var(--accent); }
 input[type="password"] { font-family: monospace; }
-.btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; outline: none; transition: opacity .12s, filter .12s; white-space: nowrap; }
-.btn:hover { filter: brightness(1.1); }
+.btn { display: inline-flex; align-items: center; gap: 5px; padding: 7px 13px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; border: none; outline: none; transition: filter .12s; white-space: nowrap; }
+.btn:hover { filter: brightness(1.12); }
 .btn:active { filter: brightness(.9); }
 .btn-primary { background: var(--accent); color: #fff; }
-.btn-danger { background: var(--danger); color: #fff; }
+.btn-danger { background: transparent; color: var(--danger); border: 1px solid rgba(224,85,85,.35); }
+.btn-danger:hover { background: rgba(224,85,85,.1); filter: none; }
 .btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
-.btn-sm { padding: 5px 11px; font-size: 12px; }
-.row { display: flex; align-items: center; gap: 10px; }
-.row-between { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
-.camera-list { display: flex; flex-direction: column; gap: 8px; }
-.camera-row { display: flex; align-items: center; gap: 14px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
-.camera-name { font-weight: 600; font-size: 13px; color: #fff; }
-.camera-meta { font-size: 11px; color: var(--muted); margin-top: 2px; font-family: monospace; }
+.btn-add { width: 100%; padding: 10px; background: transparent; border: 1px dashed var(--border); color: var(--muted); border-radius: 8px; font-size: 13px; cursor: pointer; transition: border-color .12s, color .12s; }
+.btn-add:hover { border-color: var(--accent); color: var(--accent); }
 .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 24px; width: 500px; max-width: 95vw; }
-.modal-title { font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 20px; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
-.toast { position: fixed; bottom: 24px; right: 24px; padding: 11px 18px; border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 200; border: 1px solid; }
+.modal { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 22px; width: 480px; max-width: 95vw; }
+.modal-title { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 18px; }
+.modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 200; border: 1px solid; }
 .toast-ok { background: rgba(62,207,142,.1); border-color: rgba(62,207,142,.3); color: var(--success); }
 .toast-err { background: rgba(224,85,85,.1); border-color: rgba(224,85,85,.3); color: var(--danger); }
-.divider { height: 1px; background: var(--border); margin: 20px 0; }
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useCallback, useRef } = React;
+const { useState, useEffect, useCallback } = React;
 const BASE = window.INGRESS_PATH || '';
-
-// ── Sidebar ──────────────────────────────────────────────────────────────────
-function Sidebar({ page, onNavigate }) {
-  const items = [
-    { id: 'live',     label: 'Live' },
-    { id: 'cameras',  label: 'Cameras' },
-    { id: 'settings', label: 'Settings' },
-  ];
-  return (
-    <nav className="sidebar">
-      <div className="sidebar-header">
-        <div className="sidebar-title">RTSP Switcher</div>
-      </div>
-      {items.map(i => (
-        <div key={i.id} className={`nav-item${page === i.id ? ' active' : ''}`} onClick={() => onNavigate(i.id)}>
-          {i.label}
-        </div>
-      ))}
-    </nav>
-  );
-}
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function Toast({ toast }) {
@@ -153,69 +131,30 @@ function Toast({ toast }) {
   return <div className={`toast ${toast.ok ? 'toast-ok' : 'toast-err'}`}>{toast.msg}</div>;
 }
 
-// ── Snapshot image ────────────────────────────────────────────────────────────
+// ── Snapshot ──────────────────────────────────────────────────────────────────
 function Snapshot({ ts }) {
   const [ok, setOk] = useState(false);
   return (
-    <div className="snapshot-wrap">
+    <div className="snapshot-outer">
       <img
         src={`${BASE}/api/snapshot?t=${ts}`}
         style={{ display: ok ? 'block' : 'none' }}
         onLoad={() => setOk(true)}
         onError={() => setOk(false)}
-        alt="Live snapshot"
+        alt=""
       />
       {!ok && <span className="snapshot-placeholder">No snapshot available</span>}
     </div>
   );
 }
 
-// ── Live page ─────────────────────────────────────────────────────────────────
-function LivePage() {
-  const [status, setStatus] = useState(null);
-  const [ts, setTs] = useState(Date.now());
-
-  useEffect(() => {
-    const tick = () => {
-      fetch(`${BASE}/api/status`).then(r => r.json()).then(setStatus).catch(() => {});
-      setTs(Date.now());
-    };
-    tick();
-    const id = setInterval(tick, 3000);
-    return () => clearInterval(id);
-  }, []);
-
-  return (
-    <div>
-      <h1>Live</h1>
-      <div className="card">
-        <Snapshot ts={ts} />
-        {status && (
-          <div className="row">
-            <span className={`badge ${status.streaming ? 'badge-live' : 'badge-idle'}`}>
-              {status.streaming ? '\u25cf Live' : '\u25cb Idle'}
-            </span>
-            {status.active_stream && (
-              <span style={{ color: 'var(--muted)', fontSize: 13 }}>{status.active_stream}</span>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ── Camera modal ──────────────────────────────────────────────────────────────
-const BLANK_CAM = {
-  stream_name: '', stream_url: '', stream_width: 1920, stream_height: 1080,
-  stream_framerate: 30, stream_codec: 'h264', stream_rotation: 0,
-};
+const BLANK_CAM = { stream_name: '', stream_url: '', stream_width: 1920, stream_height: 1080, stream_framerate: 30, stream_codec: 'h264', stream_rotation: 0 };
 
 function CameraModal({ initial, onSave, onClose }) {
   const [form, setForm] = useState(initial ? { ...initial } : { ...BLANK_CAM });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const num = (k, v) => set(k, parseInt(v) || 0);
-
   return (
     <div className="modal-bg" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
@@ -229,18 +168,9 @@ function CameraModal({ initial, onSave, onClose }) {
             <label>RTSP URL</label>
             <input value={form.stream_url} onChange={e => set('stream_url', e.target.value)} placeholder="rtsp://192.168.1.x:8554/stream" />
           </div>
-          <div className="field">
-            <label>Width</label>
-            <input type="number" value={form.stream_width} onChange={e => num('stream_width', e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Height</label>
-            <input type="number" value={form.stream_height} onChange={e => num('stream_height', e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Framerate</label>
-            <input type="number" value={form.stream_framerate} onChange={e => num('stream_framerate', e.target.value)} />
-          </div>
+          <div className="field"><label>Width</label><input type="number" value={form.stream_width} onChange={e => num('stream_width', e.target.value)} /></div>
+          <div className="field"><label>Height</label><input type="number" value={form.stream_height} onChange={e => num('stream_height', e.target.value)} /></div>
+          <div className="field"><label>Framerate</label><input type="number" value={form.stream_framerate} onChange={e => num('stream_framerate', e.target.value)} /></div>
           <div className="field">
             <label>Codec</label>
             <select value={form.stream_codec} onChange={e => set('stream_codec', e.target.value)}>
@@ -251,10 +181,8 @@ function CameraModal({ initial, onSave, onClose }) {
           <div className="field">
             <label>Rotation</label>
             <select value={form.stream_rotation || 0} onChange={e => num('stream_rotation', e.target.value)}>
-              <option value={0}>0\u00b0</option>
-              <option value={90}>90\u00b0</option>
-              <option value={180}>180\u00b0</option>
-              <option value={270}>270\u00b0</option>
+              <option value={0}>0\u00b0</option><option value={90}>90\u00b0</option>
+              <option value={180}>180\u00b0</option><option value={270}>270\u00b0</option>
             </select>
           </div>
         </div>
@@ -267,12 +195,29 @@ function CameraModal({ initial, onSave, onClose }) {
   );
 }
 
-// ── Cameras page ──────────────────────────────────────────────────────────────
-function CamerasPage({ config, onConfigChange, showToast }) {
-  const [modal, setModal] = useState(null); // null | 'add' | number (index)
+// ── Camera tab ────────────────────────────────────────────────────────────────
+function CameraTab({ config, onConfigChange, showToast }) {
+  const [status, setStatus] = useState(null);
+  const [ts, setTs] = useState(Date.now());
+  const [modal, setModal] = useState(null);
 
-  if (!config) return <div style={{ color: 'var(--muted)' }}>Loading\u2026</div>;
+  useEffect(() => {
+    const tick = () => {
+      fetch(`${BASE}/api/status`).then(r => r.json()).then(setStatus).catch(() => {});
+      setTs(Date.now());
+    };
+    tick();
+    const id = setInterval(tick, 3000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!config) return null;
   const streams = config.streams || [];
+
+  const switchTo = async (name) => {
+    setStatus(s => ({ ...s, active_stream: name, streaming: true }));
+    await fetch(`${BASE}/api/switch`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+  };
 
   const persist = async (newStreams) => {
     const newCfg = { ...config, streams: newStreams };
@@ -282,62 +227,52 @@ function CamerasPage({ config, onConfigChange, showToast }) {
   };
 
   const handleSave = (form) => {
-    const newStreams = modal === 'add'
-      ? [...streams, form]
-      : streams.map((s, i) => i === modal ? form : s);
+    const newStreams = modal === 'add' ? [...streams, form] : streams.map((s, i) => i === modal ? form : s);
     persist(newStreams);
     setModal(null);
   };
 
-  const handleDelete = (idx) => {
+  const handleDelete = (e, idx) => {
+    e.stopPropagation();
     if (!confirm(`Delete "${streams[idx].stream_name}"?`)) return;
     persist(streams.filter((_, i) => i !== idx));
   };
 
+  const active = status?.active_stream;
+
   return (
-    <div>
-      <div className="row-between">
-        <h1 style={{ margin: 0 }}>Cameras</h1>
-        <button className="btn btn-primary" onClick={() => setModal('add')}>+ Add Camera</button>
-      </div>
-      {streams.length === 0 && (
-        <p style={{ color: 'var(--muted)', fontSize: 13 }}>No cameras configured. Add one to get started.</p>
-      )}
-      <div className="camera-list">
-        {streams.map((s, i) => (
-          <div key={i} className="camera-row">
-            <div style={{ flex: 1 }}>
-              <div className="camera-name">{s.stream_name}</div>
-              <div className="camera-meta">{s.stream_url}</div>
-              <div className="camera-meta" style={{ fontFamily: 'sans-serif', marginTop: 3 }}>
-                {s.stream_width}&times;{s.stream_height} &middot; {s.stream_framerate} fps &middot; {(s.stream_codec || '').toUpperCase()}
-                {s.stream_rotation ? ` \u00b7 ${s.stream_rotation}\u00b0` : ''}
+    <div className="content">
+      <Snapshot ts={ts} />
+      <div className="camera-section">
+        <div className="camera-list">
+          {streams.map((s, i) => {
+            const isActive = s.stream_name === active;
+            return (
+              <div key={i} className={`camera-row${isActive ? ' active' : ''}`} onClick={() => switchTo(s.stream_name)}>
+                <span className="camera-name">{s.stream_name}</span>
+                {isActive && <span className="live-dot">Live</span>}
+                <div className="cam-actions">
+                  <button className="btn btn-ghost" onClick={e => { e.stopPropagation(); setModal(i); }}>Edit</button>
+                  <button className="btn btn-danger" onClick={e => handleDelete(e, i)}>Delete</button>
+                </div>
               </div>
-            </div>
-            <div className="row">
-              <button className="btn btn-ghost btn-sm" onClick={() => setModal(i)}>Edit</button>
-              <button className="btn btn-danger btn-sm" onClick={() => handleDelete(i)}>Delete</button>
-            </div>
-          </div>
-        ))}
+            );
+          })}
+        </div>
+        <button className="btn-add" onClick={() => setModal('add')}>+ Add Camera</button>
       </div>
       {modal !== null && (
-        <CameraModal
-          initial={modal === 'add' ? null : streams[modal]}
-          onSave={handleSave}
-          onClose={() => setModal(null)}
-        />
+        <CameraModal initial={modal === 'add' ? null : streams[modal]} onSave={handleSave} onClose={() => setModal(null)} />
       )}
     </div>
   );
 }
 
-// ── Settings page ─────────────────────────────────────────────────────────────
-function SettingsPage({ config, onConfigChange, showToast }) {
+// ── Settings tab ──────────────────────────────────────────────────────────────
+function SettingsTab({ config, onConfigChange, showToast }) {
   const [form, setForm] = useState(null);
   useEffect(() => { if (config) setForm({ ...config }); }, [config]);
-
-  if (!form) return <div style={{ color: 'var(--muted)' }}>Loading\u2026</div>;
+  if (!form) return null;
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const num = (k, v) => set(k, parseInt(v) || 0);
@@ -349,95 +284,52 @@ function SettingsPage({ config, onConfigChange, showToast }) {
   };
 
   return (
-    <div>
-      <h1>Settings</h1>
-
-      <div className="card">
-        <h2>Stream Output</h2>
-        <div className="form-grid">
-          <div className="field field-full">
-            <label>RTMP URL</label>
-            <input value={form.rtmp_url || ''} onChange={e => set('rtmp_url', e.target.value)} placeholder="rtmp://a.rtmp.youtube.com/live2/..." />
-          </div>
-          <div className="field">
-            <label>Output Width</label>
-            <input type="number" value={form.output_width || ''} onChange={e => num('output_width', e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Output Height</label>
-            <input type="number" value={form.output_height || ''} onChange={e => num('output_height', e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Video Bitrate (kbps)</label>
-            <input type="number" value={form.video_bitrate_kbps || ''} onChange={e => num('video_bitrate_kbps', e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Output Framerate</label>
-            <input type="number" value={form.output_framerate || ''} onChange={e => num('output_framerate', e.target.value)} />
+    <div className="content">
+      <div className="settings-content">
+        <div className="card">
+          <h2>Stream Output</h2>
+          <div className="form-grid">
+            <div className="field field-full"><label>RTMP URL</label><input value={form.rtmp_url || ''} onChange={e => set('rtmp_url', e.target.value)} placeholder="rtmp://a.rtmp.youtube.com/live2/..." /></div>
+            <div className="field"><label>Output Width</label><input type="number" value={form.output_width || ''} onChange={e => num('output_width', e.target.value)} /></div>
+            <div className="field"><label>Output Height</label><input type="number" value={form.output_height || ''} onChange={e => num('output_height', e.target.value)} /></div>
+            <div className="field"><label>Video Bitrate (kbps)</label><input type="number" value={form.video_bitrate_kbps || ''} onChange={e => num('video_bitrate_kbps', e.target.value)} /></div>
+            <div className="field"><label>Output Framerate</label><input type="number" value={form.output_framerate || ''} onChange={e => num('output_framerate', e.target.value)} /></div>
           </div>
         </div>
-      </div>
-
-      <div className="card">
-        <h2>Home Assistant</h2>
-        <div className="form-grid">
-          <div className="field field-full">
-            <label>WebSocket URL</label>
-            <input value={form.ha_url || ''} onChange={e => set('ha_url', e.target.value)} placeholder="ws://homeassistant:8123/api/websocket" />
-          </div>
-          <div className="field field-full">
-            <label>Long-Lived Access Token</label>
-            <input type="password" value={form.ha_token || ''} onChange={e => set('ha_token', e.target.value)} />
-          </div>
-          <div className="field field-full">
-            <label>Entity ID</label>
-            <input value={form.ha_entity_id || ''} onChange={e => set('ha_entity_id', e.target.value)} placeholder="input_select.camera_view" />
+        <div className="card">
+          <h2>Home Assistant</h2>
+          <div className="form-grid">
+            <div className="field field-full"><label>WebSocket URL</label><input value={form.ha_url || ''} onChange={e => set('ha_url', e.target.value)} placeholder="ws://homeassistant:8123/api/websocket" /></div>
+            <div className="field field-full"><label>Long-Lived Access Token</label><input type="password" value={form.ha_token || ''} onChange={e => set('ha_token', e.target.value)} /></div>
+            <div className="field field-full"><label>Entity ID</label><input value={form.ha_entity_id || ''} onChange={e => set('ha_entity_id', e.target.value)} placeholder="input_select.camera_view" /></div>
           </div>
         </div>
-      </div>
-
-      <div className="card">
-        <h2>Advanced</h2>
-        <div className="form-grid">
-          <div className="field">
-            <label>RTSP Latency (ms)</label>
-            <input type="number" value={form.rtsp_latency_ms || ''} onChange={e => num('rtsp_latency_ms', e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Reconnect Delay (s)</label>
-            <input type="number" value={form.reconnect_delay_sec || ''} onChange={e => num('reconnect_delay_sec', e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Output Stall Timeout (s)</label>
-            <input type="number" value={form.output_stall_timeout_sec || ''} onChange={e => num('output_stall_timeout_sec', e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Startup Output Timeout (s)</label>
-            <input type="number" value={form.startup_output_timeout_sec || ''} onChange={e => num('startup_output_timeout_sec', e.target.value)} />
+        <div className="card">
+          <h2>Advanced</h2>
+          <div className="form-grid">
+            <div className="field"><label>RTSP Latency (ms)</label><input type="number" value={form.rtsp_latency_ms || ''} onChange={e => num('rtsp_latency_ms', e.target.value)} /></div>
+            <div className="field"><label>Reconnect Delay (s)</label><input type="number" value={form.reconnect_delay_sec || ''} onChange={e => num('reconnect_delay_sec', e.target.value)} /></div>
+            <div className="field"><label>Output Stall Timeout (s)</label><input type="number" value={form.output_stall_timeout_sec || ''} onChange={e => num('output_stall_timeout_sec', e.target.value)} /></div>
+            <div className="field"><label>Startup Output Timeout (s)</label><input type="number" value={form.startup_output_timeout_sec || ''} onChange={e => num('startup_output_timeout_sec', e.target.value)} /></div>
           </div>
         </div>
+        <button className="btn btn-primary" onClick={handleSave}>Save Settings</button>
       </div>
-
-      <button className="btn btn-primary" onClick={handleSave}>Save Settings</button>
     </div>
   );
 }
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
+// ── Shared ────────────────────────────────────────────────────────────────────
 async function saveConfig(cfg) {
   try {
-    const r = await fetch(`${BASE}/api/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfg),
-    });
+    const r = await fetch(`${BASE}/api/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
     return r.ok;
   } catch { return false; }
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
-  const [page, setPage] = useState('live');
+  const [tab, setTab] = useState('cameras');
   const [config, setConfig] = useState(null);
   const [toast, setToast] = useState(null);
 
@@ -452,12 +344,12 @@ function App() {
 
   return (
     <>
-      <Sidebar page={page} onNavigate={setPage} />
-      <div className="main">
-        {page === 'live'     && <LivePage />}
-        {page === 'cameras'  && <CamerasPage config={config} onConfigChange={setConfig} showToast={showToast} />}
-        {page === 'settings' && <SettingsPage config={config} onConfigChange={setConfig} showToast={showToast} />}
+      <div className="tabbar">
+        <div className={`tab${tab === 'cameras' ? ' active' : ''}`} onClick={() => setTab('cameras')}>Cameras</div>
+        <div className={`tab${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}>Settings</div>
       </div>
+      {tab === 'cameras'  && <CameraTab config={config} onConfigChange={setConfig} showToast={showToast} />}
+      {tab === 'settings' && <SettingsTab config={config} onConfigChange={setConfig} showToast={showToast} />}
       <Toast toast={toast} />
     </>
   );
@@ -470,6 +362,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 
 _flask_app = Flask(__name__)
 _manager_ref = None
+_ha_listener_ref = None
 
 
 @_flask_app.route("/")
@@ -508,6 +401,25 @@ def _api_snapshot():
     if data is None:
         abort(503)
     return Response(data, mimetype="image/jpeg")
+
+
+@_flask_app.route("/api/switch", methods=["POST"])
+def _api_switch():
+    data = request.get_json(force=True)
+    name = (data or {}).get("name")
+    if not name:
+        return jsonify({"error": "name required"}), 400
+
+    if _ha_listener_ref:
+        try:
+            _ha_listener_ref.select_option(name)
+            return jsonify({"ok": True})
+        except Exception:
+            pass  # fall through to direct switch
+
+    if _manager_ref:
+        _manager_ref.switch_stream(name)
+    return jsonify({"ok": True})
 
 
 @_flask_app.route("/api/status")
@@ -751,6 +663,18 @@ class HomeAssistantListener(threading.Thread):
             except Exception:
                 pass
 
+    def select_option(self, name: str):
+        cfg = _get_cfg()
+        try:
+            self._client.trigger_service(
+                "input_select", "select_option",
+                entity_id=cfg["ha_entity_id"],
+                option=name,
+            )
+        except Exception as exc:
+            print(f"[ha] select_option failed: {exc}", flush=True)
+            raise
+
     def _sync_entity(self):
         cfg = _get_cfg()
         stream_names = [s["stream_name"] for s in cfg.get("streams", [])]
@@ -947,6 +871,8 @@ def main():
     if cfg.get("ha_url") and cfg.get("ha_token"):
         ha_listener = HomeAssistantListener(manager.switch_stream)
         ha_listener.start()
+        global _ha_listener_ref
+        _ha_listener_ref = ha_listener
 
     streams = cfg.get("streams", [])
     if streams:
