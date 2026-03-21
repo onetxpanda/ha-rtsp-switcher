@@ -1,3 +1,6 @@
+## 2.0.3
+- Broadcast restart now copies all writable settings from the last broadcast (contentDetails: dvr, encryption, embed, latency preference, monitor stream, captions type, projection, auto-start/stop; status: madeForKids; snippet: title, description)
+
 ## 2.0.2
 - Fix YouTube API error: broadcastStatus and mine are mutually exclusive parameters
 

@@ -208,21 +208,50 @@ class YouTubeManager(threading.Thread):
 
     def _get_last_broadcast(self) -> dict | None:
         result = self._api_get("liveBroadcasts", {
-            "part": "snippet,status", "broadcastStatus": "completed", "maxResults": "1",
+            "part": "snippet,status,contentDetails", "broadcastStatus": "completed", "maxResults": "1",
         })
         items = (result or {}).get("items", [])
         return items[0] if items else None
 
-    def _create_broadcast(self, title: str, description: str, privacy: str) -> str | None:
-        body = {
-            "snippet": {
-                "title": title,
-                "description": description,
-                "scheduledStartTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            },
-            "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False},
-            "contentDetails": {"enableAutoStart": False, "enableAutoStop": False},
-        }
+    def _create_broadcast(self, source: dict | None) -> str | None:
+        """Create a new broadcast, copying all writable fields from source if provided."""
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        if source:
+            src_snippet = source.get("snippet", {})
+            src_status = source.get("status", {})
+            src_cd = source.get("contentDetails", {})
+            src_monitor = src_cd.get("monitorStream", {})
+
+            snippet = {
+                "title": src_snippet.get("title", "Live Stream"),
+                "description": src_snippet.get("description", ""),
+                "scheduledStartTime": now,
+            }
+            status = {
+                "privacyStatus": src_status.get("privacyStatus", "public"),
+                "selfDeclaredMadeForKids": src_status.get("selfDeclaredMadeForKids", False),
+            }
+            content_details = {}
+            for key in ("enableDvr", "enableContentEncryption", "enableEmbed",
+                        "recordFromStart", "startWithSlate", "projection",
+                        "latencyPreference", "enableAutoStart", "enableAutoStop",
+                        "closedCaptionsType"):
+                if key in src_cd:
+                    content_details[key] = src_cd[key]
+            if src_monitor:
+                monitor = {}
+                for key in ("enableMonitorStream", "broadcastStreamDelayMs"):
+                    if key in src_monitor:
+                        monitor[key] = src_monitor[key]
+                if monitor:
+                    content_details["monitorStream"] = monitor
+        else:
+            snippet = {"title": "Live Stream", "description": "", "scheduledStartTime": now}
+            status = {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
+            content_details = {}
+
+        body = {"snippet": snippet, "status": status, "contentDetails": content_details}
         result = self._api_post("liveBroadcasts", body, {"part": "snippet,status,contentDetails"})
         return (result or {}).get("id")
 
@@ -248,15 +277,7 @@ class YouTubeManager(threading.Thread):
             stream_id = live_stream["id"]
 
             last = self._get_last_broadcast()
-            if last:
-                s = last.get("snippet", {})
-                title = s.get("title", "Live Stream")
-                description = s.get("description", "")
-                privacy = last.get("status", {}).get("privacyStatus", "public")
-            else:
-                title, description, privacy = "Live Stream", "", "public"
-
-            broadcast_id = self._create_broadcast(title, description, privacy)
+            broadcast_id = self._create_broadcast(last)
             if not broadcast_id:
                 return False, "Failed to create broadcast"
 
