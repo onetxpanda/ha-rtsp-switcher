@@ -36,6 +36,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     librtmp1 \
     # voaacenc dependency
     libvo-aacenc0 \
+    # diagnostics
+    ffmpeg \
+    pciutils \
   && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
@@ -43,6 +46,7 @@ RUN pip3 install --break-system-packages -r /app/requirements.txt
 
 COPY rtsp_switcher.py /app/rtsp_switcher.py
 COPY settings.yaml.example /app/settings.yaml.example
+COPY hw-info.sh /usr/local/bin/hw-info
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
 

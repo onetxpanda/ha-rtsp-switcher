@@ -1,6 +1,6 @@
 name: "RTSP Switcher"
 description: "Switches between RTSP camera streams and streams to RTMP (e.g. YouTube Live)."
-version: "1.0.4"
+version: "1.0.5"
 slug: "rtsp_switcher"
 init: false
 arch:
