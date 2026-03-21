@@ -400,7 +400,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; f
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .tab svg { display: block; }
-.yt-strip { display: flex; align-items: center; gap: 10px; padding: 7px 14px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; min-height: 36px; }
+.yt-strip { display: flex; align-items: center; gap: 10px; padding: 7px 14px; border-bottom: 1px solid transparent; flex-shrink: 0; min-height: 36px; transition: background .3s, border-color .3s; }
+.yt-strip.s-idle    { background: var(--surface); border-color: var(--border); }
+.yt-strip.s-live    { background: rgba(62,207,142,.08); border-color: rgba(62,207,142,.2); }
+.yt-strip.s-warn    { background: rgba(245,166,35,.08); border-color: rgba(245,166,35,.2); }
+.yt-strip.s-error   { background: rgba(224,85,85,.08);  border-color: rgba(224,85,85,.2); }
 .yt-strip-time { font-size: 11px; color: var(--muted); }
 .yt-health-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: #f5a623; }
 .yt-health-err  { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--danger); }
@@ -525,10 +529,14 @@ function HealthWarn({ health, issues }) {
 function YtStrip({ yt }) {
   const [, tick] = useState(0);
   useEffect(() => { const id = setInterval(() => tick(n => n + 1), 30000); return () => clearInterval(id); }, []);
-  if (!yt?.configured) return <div className="yt-strip" />;
+  if (!yt?.configured) return <div className="yt-strip s-idle" />;
   const live = yt.live;
+  const health = yt.stream_health;
+  const hasError = live && (health === 'bad' || health === 'noData');
+  const hasWarn  = live && !hasError && health && health !== 'good' && health !== 'ok';
+  const stripCls = !live ? 's-idle' : hasError ? 's-error' : hasWarn ? 's-warn' : 's-live';
   return (
-    <div className="yt-strip">
+    <div className={`yt-strip ${stripCls}`}>
       <span className={`yt-status-badge ${live ? 'live' : 'idle'}`}>{live ? 'Live' : 'Idle'}</span>
       {live && yt.started_at && (
         <span className="yt-strip-time">since {fmtTime(yt.started_at)} &middot; {fmtElapsed(yt.started_at)}</span>

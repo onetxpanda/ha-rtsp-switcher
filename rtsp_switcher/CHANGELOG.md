@@ -1,3 +1,6 @@
+## 2.1.3
+- Color the YouTube status strip by state: green when live and healthy, yellow for warnings, red for errors/no-data, grey when idle
+
 ## 2.1.2
 - Fix scrolling: apply flex layout to #root instead of body so the flex chain actually reaches the scrollable content area
 
