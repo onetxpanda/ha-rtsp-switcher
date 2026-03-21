@@ -739,18 +739,6 @@ function SettingsTab({ config, onConfigChange, showToast }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const num = (k, v) => set(k, parseInt(v) || 0);
 
-  const currentRes = findResolution(form.output_width, form.output_height, form.output_framerate) || YT_RESOLUTIONS[0];
-  const currentBr  = findBitrate(form.video_bitrate_kbps) || YT_BITRATES[0];
-
-  const setResolution = (label) => {
-    const r = YT_RESOLUTIONS.find(x => x.label === label);
-    if (r) setForm(f => ({ ...f, output_width: r.width, output_height: r.height, output_framerate: r.fps }));
-  };
-  const setBitrate = (label) => {
-    const b = YT_BITRATES.find(x => x.label === label);
-    if (b) setForm(f => ({ ...f, video_bitrate_kbps: b.kbps }));
-  };
-
   const handleSave = async () => {
     const ok = await saveConfig(form);
     if (ok) { onConfigChange(form); showToast('Saved', true); }
@@ -760,24 +748,6 @@ function SettingsTab({ config, onConfigChange, showToast }) {
   return (
     <div className="content">
       <div className="settings-content">
-        <div className="card">
-          <h2>Stream Output</h2>
-          <div className="form-grid">
-            <div className="field field-full"><label>RTMP URL</label><input value={form.rtmp_url || ''} onChange={e => set('rtmp_url', e.target.value)} placeholder="rtmp://a.rtmp.youtube.com/live2/..." /></div>
-            <div className="field">
-              <label>Resolution</label>
-              <select value={currentRes.label} onChange={e => setResolution(e.target.value)}>
-                {YT_RESOLUTIONS.map(r => <option key={r.label} value={r.label}>{r.label}</option>)}
-              </select>
-            </div>
-            <div className="field">
-              <label>Video Bitrate</label>
-              <select value={currentBr.label} onChange={e => setBitrate(e.target.value)}>
-                {YT_BITRATES.map(b => <option key={b.label} value={b.label}>{b.label}</option>)}
-              </select>
-            </div>
-          </div>
-        </div>
         <div className="card">
           <h2>Home Assistant</h2>
           <div className="form-grid">
@@ -807,9 +777,13 @@ function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
   const [polling, setPolling] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [creds, setCreds] = useState({ youtube_client_id: '', youtube_client_secret: '' });
+  const [streamForm, setStreamForm] = useState(null);
 
   useEffect(() => {
-    if (config) setCreds({ youtube_client_id: config.youtube_client_id || '', youtube_client_secret: config.youtube_client_secret || '' });
+    if (config) {
+      setCreds({ youtube_client_id: config.youtube_client_id || '', youtube_client_secret: config.youtube_client_secret || '' });
+      setStreamForm({ rtmp_url: config.rtmp_url || '', output_width: config.output_width, output_height: config.output_height, output_framerate: config.output_framerate, video_bitrate_kbps: config.video_bitrate_kbps });
+    }
   }, [config]);
 
   // While device flow is active, poll every 5s
@@ -880,6 +854,17 @@ function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
   const live = yt?.live;
   const configured = yt?.configured;
 
+  const currentRes = streamForm ? (findResolution(streamForm.output_width, streamForm.output_height, streamForm.output_framerate) || YT_RESOLUTIONS[0]) : YT_RESOLUTIONS[0];
+  const currentBr  = streamForm ? (findBitrate(streamForm.video_bitrate_kbps) || YT_BITRATES[0]) : YT_BITRATES[0];
+  const setResolution = (label) => { const r = YT_RESOLUTIONS.find(x => x.label === label); if (r) setStreamForm(f => ({ ...f, output_width: r.width, output_height: r.height, output_framerate: r.fps })); };
+  const setBitrate    = (label) => { const b = YT_BITRATES.find(x => x.label === label);    if (b) setStreamForm(f => ({ ...f, video_bitrate_kbps: b.kbps })); };
+  const saveStream = async () => {
+    const newCfg = { ...config, ...streamForm };
+    const ok = await saveConfig(newCfg);
+    if (ok) { onConfigChange(newCfg); showToast('Saved', true); }
+    else showToast('Save failed', false);
+  };
+
   return (
     <div className="content">
       <div className="settings-content">
@@ -918,6 +903,26 @@ function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
             </label>
           </div>
         </div>
+
+        {streamForm && <div className="card">
+          <h2>Stream Output</h2>
+          <div className="form-grid" style={{ marginBottom: 12 }}>
+            <div className="field field-full"><label>RTMP URL</label><input value={streamForm.rtmp_url} onChange={e => setStreamForm(f => ({ ...f, rtmp_url: e.target.value }))} placeholder="rtmp://a.rtmp.youtube.com/live2/..." /></div>
+            <div className="field">
+              <label>Resolution</label>
+              <select value={currentRes.label} onChange={e => setResolution(e.target.value)}>
+                {YT_RESOLUTIONS.map(r => <option key={r.label} value={r.label}>{r.label}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Video Bitrate</label>
+              <select value={currentBr.label} onChange={e => setBitrate(e.target.value)}>
+                {YT_BITRATES.map(b => <option key={b.label} value={b.label}>{b.label}</option>)}
+              </select>
+            </div>
+          </div>
+          <button className="btn btn-ghost" onClick={saveStream}>Save</button>
+        </div>}
 
         <div className="card">
           <h2>OAuth Credentials</h2>

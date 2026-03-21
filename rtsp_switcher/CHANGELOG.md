@@ -1,3 +1,6 @@
+## 2.1.6
+- Move Stream Output settings (RTMP URL, resolution, bitrate) from Settings tab to YouTube tab
+
 ## 2.1.5
 - Remove custom fallback from resolution and bitrate dropdowns; presets only
 
