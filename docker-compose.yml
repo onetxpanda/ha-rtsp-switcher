@@ -2,6 +2,7 @@ services:
   rtsp_switcher:
     build:
       context: ./rtsp_switcher
+      dockerfile: Dockerfile
     volumes:
       - ./rtsp_switcher/settings.yaml:/app/settings.yaml:ro
     devices:
