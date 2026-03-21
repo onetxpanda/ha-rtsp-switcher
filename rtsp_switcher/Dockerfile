@@ -3,6 +3,10 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV RTSP_HWACCEL=vaapi
 ENV LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
+ENV LIBVA_DRIVER_NAME=iHD
+ENV LIBVA_DRM_DEVICE=/dev/dri/renderD128
+ENV GST_VAAPI_DRM_DEVICE=/dev/dri/renderD128
+ENV GST_VA_ALL_DRIVERS=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Python + GObject introspection bindings

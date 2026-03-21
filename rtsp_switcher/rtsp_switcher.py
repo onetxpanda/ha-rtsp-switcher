@@ -210,10 +210,6 @@ def _build_pipeline_string(stream, hwaccel):
 
 def pipeline_worker(stream_name):
     """Runs in a child process. Owns GStreamer entirely. Exits when the pipeline stops."""
-    os.environ.setdefault("LIBVA_DRIVER_NAME", "iHD")
-    os.environ.setdefault("LIBVA_DRM_DEVICE", "/dev/dri/renderD128")
-    os.environ.setdefault("GST_VAAPI_DRM_DEVICE", "/dev/dri/renderD128")
-
     import gi
     gi.require_version("Gst", "1.0")
     from gi.repository import Gst, GLib
