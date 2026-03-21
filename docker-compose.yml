@@ -7,4 +7,11 @@ services:
       - ./rtsp_switcher/settings.yaml:/app/settings.yaml:ro
     devices:
       - /dev/dri:/dev/dri
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video]
     restart: unless-stopped
