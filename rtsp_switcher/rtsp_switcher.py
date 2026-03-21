@@ -34,8 +34,8 @@ def _save_config(new_cfg: dict):
     global _cfg
     with _cfg_lock:
         _cfg = new_cfg
-    with open(_cfg_path, "w") as f:
-        yaml.safe_dump(new_cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        with open(_cfg_path, "w") as f:
+            yaml.safe_dump(new_cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 
 def _get_cfg() -> dict:
