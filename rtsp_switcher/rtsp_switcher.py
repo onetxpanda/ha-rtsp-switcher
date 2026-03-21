@@ -96,10 +96,11 @@ class YouTubeManager(threading.Thread):
         self._access_token: str | None = None
         self._token_expires_at: float = 0.0
         self._status: dict = {
-            "live": False, "broadcast_id": None, "title": None, "stream_health": None,
+            "live": False, "broadcast_id": None, "title": None, "stream_health": None, "last_error": None,
         }
         self._auto_restart: bool = False
         self._stopping = threading.Event()
+        self._poll_now = threading.Event()
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
@@ -133,24 +134,28 @@ class YouTubeManager(threading.Thread):
 
     # ── API helpers ───────────────────────────────────────────────────────────
 
-    def _api_get(self, path: str, params: dict | None = None) -> dict | None:
+    def _api_get(self, path: str, params: dict | None = None) -> dict:
         token = self._get_token()
         if not token:
-            return None
+            raise RuntimeError("No access token — check OAuth credentials")
         url = f"{_YT_API}/{path}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
         try:
             return _yt_request(req)
-        except Exception as exc:
-            print(f"[youtube] GET {path} failed: {exc}", flush=True)
-            return None
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            try:
+                detail = json.loads(body).get("error", {}).get("message", body.decode())
+            except Exception:
+                detail = body.decode(errors="replace")
+            raise RuntimeError(f"GET {path}: {exc.code} {detail}") from exc
 
-    def _api_post(self, path: str, body: dict | None = None, params: dict | None = None) -> dict | None:
+    def _api_post(self, path: str, body: dict | None = None, params: dict | None = None) -> dict:
         token = self._get_token()
         if not token:
-            return None
+            raise RuntimeError("No access token — check OAuth credentials")
         url = f"{_YT_API}/{path}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -162,9 +167,13 @@ class YouTubeManager(threading.Thread):
         )
         try:
             return _yt_request(req)
-        except Exception as exc:
-            print(f"[youtube] POST {path} failed: {exc}", flush=True)
-            return None
+        except urllib.error.HTTPError as exc:
+            body_bytes = exc.read()
+            try:
+                detail = json.loads(body_bytes).get("error", {}).get("message", body_bytes.decode())
+            except Exception:
+                detail = body_bytes.decode(errors="replace")
+            raise RuntimeError(f"POST {path}: {exc.code} {detail}") from exc
 
     # ── Public accessors ──────────────────────────────────────────────────────
 
@@ -274,37 +283,45 @@ class YouTubeManager(threading.Thread):
     # ── Background poll ───────────────────────────────────────────────────────
 
     def _poll(self):
-        active = self._get_active_broadcast()
-        if active:
-            snippet = active.get("snippet", {})
+        try:
+            active = self._get_active_broadcast()
+            if active:
+                snippet = active.get("snippet", {})
+                with self._lock:
+                    self._status = {
+                        "live": True,
+                        "broadcast_id": active.get("id"),
+                        "title": snippet.get("title"),
+                        "stream_health": None,
+                        "last_error": None,
+                    }
+            else:
+                with self._lock:
+                    self._status = {"live": False, "broadcast_id": None, "title": None, "stream_health": None, "last_error": None}
+                    auto = self._auto_restart
+                if auto:
+                    print("[youtube] Broadcast not live, auto-restarting...", flush=True)
+                    ok, msg = self.restart_broadcast()
+                    print(f"[youtube] Auto-restart result: {msg}", flush=True)
+        except Exception as exc:
+            print(f"[youtube] Poll error: {exc}", flush=True)
             with self._lock:
-                self._status = {
-                    "live": True,
-                    "broadcast_id": active.get("id"),
-                    "title": snippet.get("title"),
-                    "stream_health": None,
-                }
-        else:
-            with self._lock:
-                self._status = {"live": False, "broadcast_id": None, "title": None, "stream_health": None}
-                auto = self._auto_restart
-            if auto:
-                print("[youtube] Broadcast not live, auto-restarting...", flush=True)
-                ok, msg = self.restart_broadcast()
-                print(f"[youtube] Auto-restart result: {msg}", flush=True)
+                self._status["last_error"] = str(exc)
+
+    def force_poll(self):
+        self._poll_now.set()
 
     def run(self):
         while not self._stopping.is_set():
             cfg = _get_cfg()
             if cfg.get("youtube_refresh_token") and cfg.get("youtube_client_id") and cfg.get("youtube_client_secret"):
-                try:
-                    self._poll()
-                except Exception as exc:
-                    print(f"[youtube] Poll error: {exc}", flush=True)
-            self._stopping.wait(30)
+                self._poll()
+            self._poll_now.clear()
+            self._poll_now.wait(30)  # sleep 30s or wake early via force_poll() / stop()
 
     def stop(self):
         self._stopping.set()
+        self._poll_now.set()  # break out of wait
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +673,12 @@ function YouTubeTab({ config, onConfigChange, showToast }) {
     if (await saveConfig(newCfg)) { onConfigChange(newCfg); showToast('Token removed', true); }
   };
 
+  const doRefresh = async () => {
+    await fetch(`${BASE}/api/youtube/poll`, { method: 'POST' });
+    // give the background thread a moment to complete the poll
+    setTimeout(() => fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {}), 2000);
+  };
+
   const doRestart = async () => {
     setRestarting(true);
     try {
@@ -687,11 +710,13 @@ function YouTubeTab({ config, onConfigChange, showToast }) {
           </div>
           {yt?.title && <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 12 }}>{yt.title}</div>}
           {!configured && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>Not authorised — complete OAuth setup below.</div>}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: yt?.last_error ? 10 : 0 }}>
             <button className="btn btn-primary" onClick={doRestart} disabled={restarting || !configured}>
               {restarting ? 'Restarting\u2026' : 'Restart Broadcast'}
             </button>
+            <button className="btn btn-ghost" onClick={doRefresh}>Refresh</button>
           </div>
+          {yt?.last_error && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8, wordBreak: 'break-word' }}>{yt.last_error}</div>}
           <div className="toggle-row" style={{ marginTop: 14 }}>
             <span style={{ fontSize: 13, color: 'var(--text)' }}>Auto-restart when broadcast stops</span>
             <label className="toggle">
@@ -918,6 +943,15 @@ def _api_youtube_restart():
         return jsonify({"error": "YouTube manager not running"}), 503
     ok, msg = m.restart_broadcast()
     return jsonify({"ok": ok, "message": msg})
+
+
+@_flask_app.route("/api/youtube/poll", methods=["POST"])
+def _api_youtube_poll():
+    m = _youtube_manager_ref
+    if not m:
+        return jsonify({"error": "YouTube manager not running"}), 503
+    m.force_poll()
+    return jsonify({"ok": True})
 
 
 @_flask_app.route("/api/youtube/auto_restart", methods=["POST"])

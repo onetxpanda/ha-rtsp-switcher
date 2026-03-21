@@ -1,3 +1,8 @@
+## 2.0.1
+- Fix YouTube status not updating after auth (force-poll on Refresh button, poll wakes early via event)
+- Surface API errors in UI instead of silently returning idle
+- Add Refresh button to YouTube tab for immediate status check
+
 ## 2.0.0
 - Add YouTube Live integration: monitor broadcast status, auto-restart stopped broadcasts
 - Add device flow OAuth setup (no browser needed on the server)
