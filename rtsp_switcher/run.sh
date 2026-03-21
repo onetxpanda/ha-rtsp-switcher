@@ -4,11 +4,6 @@ export GST_GL_PLATFORM=egl
 export GST_GL_WINDOW=surfaceless
 export GST_GL_API=opengl
 
-echo "=== vainfo ==="
-vainfo --display drm --device /dev/dri/renderD128 2>&1 || true
-echo "=============="
-
-bash /usr/local/bin/hw-info 2>&1 || true
 
 CONFIG_DIR=/config/rtsp_switcher
 SETTINGS_FILE=${CONFIG_DIR}/settings.yaml
