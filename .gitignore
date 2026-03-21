@@ -1,0 +1,5 @@
+env/
+CONTEXT.md
+__pycache__/
+*.pyc
+rtsp_switcher/settings.yaml

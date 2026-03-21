@@ -1,0 +1,51 @@
+name: "RTSP Switcher"
+description: "Switches between RTSP camera streams and streams to RTMP (e.g. YouTube Live)."
+version: "1.0.0"
+slug: "rtsp_switcher"
+init: false
+arch:
+  - amd64
+startup: application
+boot: manual
+
+devices:
+  - /dev/dri
+
+options:
+  rtmp_url: "rtmp://a.rtmp.youtube.com/live2/your-stream-key"
+  ha_entity_id: "input_select.tortoise_camera_view"
+  output_width: 2560
+  output_height: 1440
+  video_bitrate_kbps: 10000
+  output_framerate: 30
+  rtsp_latency_ms: 200
+  reconnect_delay_sec: 2
+  output_stall_timeout_sec: 10
+  startup_output_timeout_sec: 20
+  streams:
+    - name: "Inside Box"
+      url: "rtsp://192.168.1.12:8554/tortoise_camera"
+      width: 1920
+      height: 1080
+      framerate: 30
+      codec: "h264"
+
+schema:
+  rtmp_url: str
+  ha_entity_id: str
+  output_width: int
+  output_height: int
+  video_bitrate_kbps: int
+  output_framerate: int
+  rtsp_latency_ms: int
+  reconnect_delay_sec: int
+  output_stall_timeout_sec: int
+  startup_output_timeout_sec: int
+  streams:
+    - name: str
+      url: str
+      width: int
+      height: int
+      framerate: int
+      codec: str
+      rotation: int?
