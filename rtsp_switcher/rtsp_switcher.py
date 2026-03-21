@@ -402,9 +402,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; f
 .tab svg { display: block; }
 .yt-strip { display: flex; align-items: center; gap: 10px; padding: 7px 14px; border-bottom: 1px solid transparent; flex-shrink: 0; min-height: 36px; transition: background .3s, border-color .3s; }
 .yt-strip.s-idle    { background: var(--surface); border-color: var(--border); }
-.yt-strip.s-live    { background: rgba(62,207,142,.08); border-color: rgba(62,207,142,.2); }
-.yt-strip.s-warn    { background: rgba(245,166,35,.08); border-color: rgba(245,166,35,.2); }
-.yt-strip.s-error   { background: rgba(224,85,85,.08);  border-color: rgba(224,85,85,.2); }
+.yt-strip.s-live    { background: rgba(62,207,142,.22); border-color: rgba(62,207,142,.55); }
+.yt-strip.s-warn    { background: rgba(245,166,35,.22); border-color: rgba(245,166,35,.55); }
+.yt-strip.s-error   { background: rgba(224,85,85,.22);  border-color: rgba(224,85,85,.55); }
 .yt-strip-time { font-size: 11px; color: var(--muted); }
 .yt-health-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: #f5a623; }
 .yt-health-err  { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--danger); }
@@ -421,7 +421,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; f
 .camera-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .camera-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; transition: background .12s, border-color .12s; user-select: none; }
 .camera-row:hover { background: var(--surface2); }
-.camera-row.active { background: rgba(62,207,142,.07); border-color: rgba(62,207,142,.25); }
+.camera-row.active { background: rgba(62,207,142,.18); border-color: rgba(62,207,142,.5); }
 .camera-name { font-size: 13px; font-weight: 500; color: var(--text); flex: 1; }
 .live-dot { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--success); white-space: nowrap; }
 .live-dot::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: block; }

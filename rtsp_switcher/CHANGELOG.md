@@ -1,3 +1,6 @@
+## 2.1.7
+- Increase vibrancy of YouTube status strip colors and active camera row highlight
+
 ## 2.1.6
 - Move Stream Output settings (RTMP URL, resolution, bitrate) from Settings tab to YouTube tab
 
