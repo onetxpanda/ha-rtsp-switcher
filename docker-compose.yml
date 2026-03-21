@@ -1,0 +1,9 @@
+services:
+  rtsp_switcher:
+    build:
+      context: ./rtsp_switcher
+    volumes:
+      - ./rtsp_switcher/settings.yaml:/app/settings.yaml:ro
+    devices:
+      - /dev/dri:/dev/dri
+    restart: unless-stopped
