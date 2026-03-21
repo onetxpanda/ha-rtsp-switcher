@@ -8,6 +8,9 @@ import threading
 import time
 
 import json
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import yaml
 from flask import Flask, Response, abort, jsonify, request
@@ -43,6 +46,265 @@ def _save_config(new_cfg: dict):
 def _get_cfg() -> dict:
     with _cfg_lock:
         return dict(_cfg)
+
+
+# ---------------------------------------------------------------------------
+# YouTube Live manager
+# ---------------------------------------------------------------------------
+
+_YT_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_YT_DEVICE_URL = "https://oauth2.googleapis.com/device/code"
+_YT_API = "https://www.googleapis.com/youtube/v3"
+
+
+def _yt_request(req):
+    """Execute a urllib request and return parsed JSON, or raise."""
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+def _yt_start_device_flow(client_id: str) -> dict:
+    data = urllib.parse.urlencode({
+        "client_id": client_id,
+        "scope": "https://www.googleapis.com/auth/youtube",
+    }).encode()
+    req = urllib.request.Request(_YT_DEVICE_URL, data=data, method="POST")
+    return _yt_request(req)
+
+
+def _yt_poll_device_token(client_id: str, client_secret: str, device_code: str) -> dict:
+    data = urllib.parse.urlencode({
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "device_code": device_code,
+        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+    }).encode()
+    req = urllib.request.Request(_YT_TOKEN_URL, data=data, method="POST")
+    try:
+        return _yt_request(req)
+    except urllib.error.HTTPError as exc:
+        body = json.loads(exc.read())
+        raise RuntimeError(body.get("error", "unknown_error")) from exc
+
+
+class YouTubeManager(threading.Thread):
+    """Background thread: monitors broadcast status and optionally auto-restarts."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self._lock = threading.Lock()
+        self._access_token: str | None = None
+        self._token_expires_at: float = 0.0
+        self._status: dict = {
+            "live": False, "broadcast_id": None, "title": None, "stream_health": None,
+        }
+        self._auto_restart: bool = False
+        self._stopping = threading.Event()
+
+    # ── Auth ──────────────────────────────────────────────────────────────────
+
+    def _refresh_access_token(self) -> str | None:
+        cfg = _get_cfg()
+        client_id = cfg.get("youtube_client_id", "")
+        client_secret = cfg.get("youtube_client_secret", "")
+        refresh_token = cfg.get("youtube_refresh_token", "")
+        if not (client_id and client_secret and refresh_token):
+            return None
+        data = urllib.parse.urlencode({
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }).encode()
+        req = urllib.request.Request(_YT_TOKEN_URL, data=data, method="POST")
+        try:
+            result = _yt_request(req)
+            self._access_token = result["access_token"]
+            self._token_expires_at = time.monotonic() + result.get("expires_in", 3600) - 60
+            return self._access_token
+        except Exception as exc:
+            print(f"[youtube] Token refresh failed: {exc}", flush=True)
+            return None
+
+    def _get_token(self) -> str | None:
+        if self._access_token and time.monotonic() < self._token_expires_at:
+            return self._access_token
+        return self._refresh_access_token()
+
+    # ── API helpers ───────────────────────────────────────────────────────────
+
+    def _api_get(self, path: str, params: dict | None = None) -> dict | None:
+        token = self._get_token()
+        if not token:
+            return None
+        url = f"{_YT_API}/{path}"
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            return _yt_request(req)
+        except Exception as exc:
+            print(f"[youtube] GET {path} failed: {exc}", flush=True)
+            return None
+
+    def _api_post(self, path: str, body: dict | None = None, params: dict | None = None) -> dict | None:
+        token = self._get_token()
+        if not token:
+            return None
+        url = f"{_YT_API}/{path}"
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        payload = json.dumps(body or {}).encode()
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            return _yt_request(req)
+        except Exception as exc:
+            print(f"[youtube] POST {path} failed: {exc}", flush=True)
+            return None
+
+    # ── Public accessors ──────────────────────────────────────────────────────
+
+    def get_status(self) -> dict:
+        with self._lock:
+            return dict(self._status)
+
+    def set_auto_restart(self, enabled: bool):
+        with self._lock:
+            self._auto_restart = enabled
+
+    # ── YouTube workflow ──────────────────────────────────────────────────────
+
+    def _get_active_broadcast(self) -> dict | None:
+        result = self._api_get("liveBroadcasts", {
+            "part": "snippet,status", "broadcastStatus": "active", "mine": "true",
+        })
+        items = (result or {}).get("items", [])
+        return items[0] if items else None
+
+    def _get_live_stream(self) -> dict | None:
+        """Find the liveStream whose streamName matches our RTMP stream key."""
+        rtmp_url = _get_cfg().get("rtmp_url", "")
+        stream_key = rtmp_url.rsplit("/", 1)[-1] if "/" in rtmp_url else ""
+        if not stream_key:
+            return None
+        result = self._api_get("liveStreams", {"part": "cdn,status", "mine": "true", "maxResults": "50"})
+        for item in (result or {}).get("items", []):
+            if item.get("cdn", {}).get("ingestionInfo", {}).get("streamName") == stream_key:
+                return item
+        return None
+
+    def _get_last_broadcast(self) -> dict | None:
+        result = self._api_get("liveBroadcasts", {
+            "part": "snippet,status", "broadcastStatus": "completed",
+            "mine": "true", "maxResults": "1",
+        })
+        items = (result or {}).get("items", [])
+        return items[0] if items else None
+
+    def _create_broadcast(self, title: str, description: str, privacy: str) -> str | None:
+        body = {
+            "snippet": {
+                "title": title,
+                "description": description,
+                "scheduledStartTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+            "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False},
+            "contentDetails": {"enableAutoStart": False, "enableAutoStop": False},
+        }
+        result = self._api_post("liveBroadcasts", body, {"part": "snippet,status,contentDetails"})
+        return (result or {}).get("id")
+
+    def _bind_broadcast(self, broadcast_id: str, stream_id: str):
+        self._api_post("liveBroadcasts/bind", params={
+            "id": broadcast_id, "streamId": stream_id, "part": "snippet",
+        })
+
+    def _transition_to_live(self, broadcast_id: str):
+        self._api_post("liveBroadcasts/transition", params={
+            "broadcastStatus": "live", "id": broadcast_id, "part": "status",
+        })
+
+    def restart_broadcast(self) -> tuple[bool, str]:
+        """Full restart workflow. Returns (success, message)."""
+        try:
+            if self._get_active_broadcast():
+                return True, "Already live"
+
+            live_stream = self._get_live_stream()
+            if not live_stream:
+                return False, "No liveStream found matching RTMP stream key"
+            stream_id = live_stream["id"]
+
+            last = self._get_last_broadcast()
+            if last:
+                s = last.get("snippet", {})
+                title = s.get("title", "Live Stream")
+                description = s.get("description", "")
+                privacy = last.get("status", {}).get("privacyStatus", "public")
+            else:
+                title, description, privacy = "Live Stream", "", "public"
+
+            broadcast_id = self._create_broadcast(title, description, privacy)
+            if not broadcast_id:
+                return False, "Failed to create broadcast"
+
+            self._bind_broadcast(broadcast_id, stream_id)
+
+            # Wait up to 30s for the liveStream to become active
+            for _ in range(30):
+                stream_data = self._api_get("liveStreams", {"part": "status", "id": stream_id})
+                items = (stream_data or {}).get("items", [])
+                if items and items[0].get("status", {}).get("streamStatus") == "active":
+                    break
+                time.sleep(1)
+            else:
+                return False, "Stream not active after 30s — is RTMP pushing?"
+
+            self._transition_to_live(broadcast_id)
+            print(f"[youtube] Restarted broadcast {broadcast_id!r} ({title!r})", flush=True)
+            return True, f"Broadcast restarted: {title}"
+
+        except Exception as exc:
+            return False, str(exc)
+
+    # ── Background poll ───────────────────────────────────────────────────────
+
+    def _poll(self):
+        active = self._get_active_broadcast()
+        if active:
+            snippet = active.get("snippet", {})
+            with self._lock:
+                self._status = {
+                    "live": True,
+                    "broadcast_id": active.get("id"),
+                    "title": snippet.get("title"),
+                    "stream_health": None,
+                }
+        else:
+            with self._lock:
+                self._status = {"live": False, "broadcast_id": None, "title": None, "stream_health": None}
+                auto = self._auto_restart
+            if auto:
+                print("[youtube] Broadcast not live, auto-restarting...", flush=True)
+                ok, msg = self.restart_broadcast()
+                print(f"[youtube] Auto-restart result: {msg}", flush=True)
+
+    def run(self):
+        while not self._stopping.is_set():
+            cfg = _get_cfg()
+            if cfg.get("youtube_refresh_token") and cfg.get("youtube_client_id") and cfg.get("youtube_client_secret"):
+                try:
+                    self._poll()
+                except Exception as exc:
+                    print(f"[youtube] Poll error: {exc}", flush=True)
+            self._stopping.wait(30)
+
+    def stop(self):
+        self._stopping.set()
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +380,19 @@ input[type="password"] { font-family: monospace; }
 .toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 200; border: 1px solid; }
 .toast-ok { background: rgba(62,207,142,.1); border-color: rgba(62,207,142,.3); color: var(--success); }
 .toast-err { background: rgba(224,85,85,.1); border-color: rgba(224,85,85,.3); color: var(--danger); }
+.yt-status-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 20px; }
+.yt-status-badge.live { background: rgba(62,207,142,.12); color: var(--success); border: 1px solid rgba(62,207,142,.3); }
+.yt-status-badge.idle { background: rgba(107,111,138,.12); color: var(--muted); border: 1px solid var(--border); }
+.yt-status-badge.live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: block; }
+.yt-auth-code { font-family: monospace; font-size: 22px; font-weight: 700; letter-spacing: .12em; color: #fff; padding: 10px 0 4px; }
+.yt-auth-url { font-size: 12px; color: var(--muted); word-break: break-all; }
+.toggle-row { display: flex; align-items: center; justify-content: space-between; }
+.toggle { position: relative; width: 38px; height: 22px; flex-shrink: 0; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider { position: absolute; inset: 0; background: var(--border); border-radius: 22px; transition: background .15s; cursor: pointer; }
+.toggle-slider::before { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform .15s; }
+.toggle input:checked + .toggle-slider { background: var(--accent); }
+.toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
 </style>
 </head>
 <body>
@@ -320,6 +595,151 @@ function SettingsTab({ config, onConfigChange, showToast }) {
   );
 }
 
+// ── YouTube tab ───────────────────────────────────────────────────────────────
+function YouTubeTab({ config, onConfigChange, showToast }) {
+  const [yt, setYt] = useState(null);
+  const [authFlow, setAuthFlow] = useState(null); // {user_code, verification_url}
+  const [polling, setPolling] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const [creds, setCreds] = useState({ youtube_client_id: '', youtube_client_secret: '' });
+
+  useEffect(() => {
+    if (config) setCreds({ youtube_client_id: config.youtube_client_id || '', youtube_client_secret: config.youtube_client_secret || '' });
+  }, [config]);
+
+  useEffect(() => {
+    const tick = () => fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {});
+    tick();
+    const id = setInterval(tick, 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  // While device flow is active, poll every 5s
+  useEffect(() => {
+    if (!authFlow) return;
+    const id = setInterval(async () => {
+      const r = await fetch(`${BASE}/api/youtube/auth/poll`, { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        setAuthFlow(null);
+        showToast('YouTube authorised', true);
+        fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {});
+      } else if (!d.pending) {
+        setAuthFlow(null);
+        showToast(d.error || 'Auth failed', false);
+      }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [authFlow]);
+
+  const saveCreds = async () => {
+    setPolling(true);
+    const newCfg = { ...config, ...creds };
+    const ok = await saveConfig(newCfg);
+    setPolling(false);
+    if (ok) { onConfigChange(newCfg); showToast('Saved', true); }
+    else showToast('Save failed', false);
+  };
+
+  const startAuth = async () => {
+    try {
+      const r = await fetch(`${BASE}/api/youtube/auth/start`, { method: 'POST' });
+      const d = await r.json();
+      if (d.error) { showToast(d.error, false); return; }
+      setAuthFlow(d);
+    } catch { showToast('Failed to start auth', false); }
+  };
+
+  const revokeAuth = async () => {
+    if (!confirm('Remove stored refresh token?')) return;
+    const newCfg = { ...config, youtube_refresh_token: '' };
+    if (await saveConfig(newCfg)) { onConfigChange(newCfg); showToast('Token removed', true); }
+  };
+
+  const doRestart = async () => {
+    setRestarting(true);
+    try {
+      const r = await fetch(`${BASE}/api/youtube/restart`, { method: 'POST' });
+      const d = await r.json();
+      showToast(d.message || (d.ok ? 'Done' : 'Failed'), d.ok);
+    } catch { showToast('Request failed', false); }
+    setRestarting(false);
+    fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {});
+  };
+
+  const toggleAutoRestart = async (e) => {
+    const enabled = e.target.checked;
+    const r = await fetch(`${BASE}/api/youtube/auto_restart`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+    if (r.ok) setYt(s => ({ ...s, auto_restart: enabled }));
+  };
+
+  const live = yt?.live;
+  const configured = yt?.configured;
+
+  return (
+    <div className="content">
+      <div className="settings-content">
+
+        <div className="card">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <h2 style={{ marginBottom: 0 }}>Broadcast Status</h2>
+            <span className={`yt-status-badge ${live ? 'live' : 'idle'}`}>{live ? 'Live' : 'Idle'}</span>
+          </div>
+          {yt?.title && <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 12 }}>{yt.title}</div>}
+          {!configured && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>Not authorised — complete OAuth setup below.</div>}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-primary" onClick={doRestart} disabled={restarting || !configured}>
+              {restarting ? 'Restarting\u2026' : 'Restart Broadcast'}
+            </button>
+          </div>
+          <div className="toggle-row" style={{ marginTop: 14 }}>
+            <span style={{ fontSize: 13, color: 'var(--text)' }}>Auto-restart when broadcast stops</span>
+            <label className="toggle">
+              <input type="checkbox" checked={yt?.auto_restart || false} onChange={toggleAutoRestart} disabled={!configured} />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+        </div>
+
+        <div className="card">
+          <h2>OAuth Credentials</h2>
+          <div className="form-grid" style={{ marginBottom: 12 }}>
+            <div className="field field-full"><label>Client ID</label><input value={creds.youtube_client_id} onChange={e => setCreds(c => ({ ...c, youtube_client_id: e.target.value }))} placeholder="xxxxxx.apps.googleusercontent.com" /></div>
+            <div className="field field-full"><label>Client Secret</label><input type="password" value={creds.youtube_client_secret} onChange={e => setCreds(c => ({ ...c, youtube_client_secret: e.target.value }))} /></div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-ghost" onClick={saveCreds} disabled={polling}>Save Credentials</button>
+            {!configured
+              ? <button className="btn btn-primary" onClick={startAuth} disabled={!creds.youtube_client_id || !creds.youtube_client_secret}>Authorise\u2026</button>
+              : <button className="btn btn-danger" onClick={revokeAuth}>Remove Token</button>
+            }
+          </div>
+          {authFlow && (
+            <div style={{ marginTop: 16, padding: '14px 16px', background: 'var(--surface2)', borderRadius: 8, border: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Open this URL on any device and enter the code:</div>
+              <div className="yt-auth-url">{authFlow.verification_url}</div>
+              <div className="yt-auth-code">{authFlow.user_code}</div>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Waiting for approval\u2026</div>
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          <h2>Setup Instructions</h2>
+          <ol style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.7, paddingLeft: 16 }}>
+            <li>Go to Google Cloud Console and create a project</li>
+            <li>Enable <strong style={{ color: 'var(--text)' }}>YouTube Data API v3</strong></li>
+            <li>Create OAuth 2.0 credentials &mdash; type: <strong style={{ color: 'var(--text)' }}>TV and Limited Input</strong></li>
+            <li>Enter Client ID and Client Secret above, then click Save</li>
+            <li>Click <strong style={{ color: 'var(--text)' }}>Authorise</strong> and follow the device flow</li>
+          </ol>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
 // ── Shared ────────────────────────────────────────────────────────────────────
 async function saveConfig(cfg) {
   try {
@@ -347,9 +767,11 @@ function App() {
     <>
       <div className="tabbar">
         <div className={`tab${tab === 'cameras' ? ' active' : ''}`} onClick={() => setTab('cameras')}>Cameras</div>
+        <div className={`tab${tab === 'youtube' ? ' active' : ''}`} onClick={() => setTab('youtube')}>YouTube</div>
         <div className={`tab${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}>Settings</div>
       </div>
       {tab === 'cameras'  && <CameraTab config={config} onConfigChange={setConfig} showToast={showToast} />}
+      {tab === 'youtube'  && <YouTubeTab config={config} onConfigChange={setConfig} showToast={showToast} />}
       {tab === 'settings' && <SettingsTab config={config} onConfigChange={setConfig} showToast={showToast} />}
       <Toast toast={toast} />
     </>
@@ -364,6 +786,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 _flask_app = Flask(__name__)
 _manager_ref = None
 _ha_listener_ref = None
+_youtube_manager_ref: YouTubeManager | None = None
+_yt_device_flow_state: dict = {}  # device_code while auth is in progress
 
 
 @_flask_app.route("/")
@@ -428,6 +852,85 @@ def _api_status():
     m = _manager_ref
     stream = m.current_stream if m else None
     return jsonify({"active_stream": stream, "streaming": stream is not None})
+
+
+@_flask_app.route("/api/youtube/status")
+def _api_youtube_status():
+    m = _youtube_manager_ref
+    cfg = _get_cfg()
+    configured = bool(cfg.get("youtube_refresh_token") and cfg.get("youtube_client_id") and cfg.get("youtube_client_secret"))
+    status = m.get_status() if m else {"live": False, "broadcast_id": None, "title": None, "stream_health": None}
+    status["configured"] = configured
+    status["auto_restart"] = cfg.get("youtube_auto_restart", False)
+    return jsonify(status)
+
+
+@_flask_app.route("/api/youtube/auth/start", methods=["POST"])
+def _api_youtube_auth_start():
+    global _yt_device_flow_state
+    cfg = _get_cfg()
+    client_id = cfg.get("youtube_client_id", "")
+    if not client_id:
+        return jsonify({"error": "youtube_client_id not configured"}), 400
+    try:
+        result = _yt_start_device_flow(client_id)
+        _yt_device_flow_state = {"device_code": result["device_code"]}
+        return jsonify({
+            "user_code": result["user_code"],
+            "verification_url": result["verification_url"],
+            "expires_in": result.get("expires_in", 1800),
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@_flask_app.route("/api/youtube/auth/poll", methods=["POST"])
+def _api_youtube_auth_poll():
+    global _yt_device_flow_state
+    device_code = _yt_device_flow_state.get("device_code")
+    if not device_code:
+        return jsonify({"error": "No active auth flow"}), 400
+    cfg = _get_cfg()
+    try:
+        result = _yt_poll_device_token(
+            cfg.get("youtube_client_id", ""),
+            cfg.get("youtube_client_secret", ""),
+            device_code,
+        )
+        new_cfg = dict(cfg)
+        new_cfg["youtube_refresh_token"] = result["refresh_token"]
+        _save_config(new_cfg)
+        _yt_device_flow_state = {}
+        return jsonify({"ok": True})
+    except RuntimeError as exc:
+        err = str(exc)
+        if err == "authorization_pending":
+            return jsonify({"pending": True})
+        return jsonify({"error": err}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@_flask_app.route("/api/youtube/restart", methods=["POST"])
+def _api_youtube_restart():
+    m = _youtube_manager_ref
+    if not m:
+        return jsonify({"error": "YouTube manager not running"}), 503
+    ok, msg = m.restart_broadcast()
+    return jsonify({"ok": ok, "message": msg})
+
+
+@_flask_app.route("/api/youtube/auto_restart", methods=["POST"])
+def _api_youtube_auto_restart():
+    data = request.get_json(force=True)
+    enabled = bool((data or {}).get("enabled", False))
+    cfg = _get_cfg()
+    new_cfg = dict(cfg)
+    new_cfg["youtube_auto_restart"] = enabled
+    _save_config(new_cfg)
+    if _youtube_manager_ref:
+        _youtube_manager_ref.set_auto_restart(enabled)
+    return jsonify({"ok": True})
 
 
 def _start_webserver():
@@ -867,6 +1370,12 @@ def main():
 
     threading.Thread(target=_start_webserver, daemon=True).start()
 
+    global _youtube_manager_ref
+    yt_manager = YouTubeManager()
+    _youtube_manager_ref = yt_manager
+    yt_manager.set_auto_restart(_get_cfg().get("youtube_auto_restart", False))
+    yt_manager.start()
+
     cfg = _get_cfg()
     ha_listener = None
     if cfg.get("ha_url") and cfg.get("ha_token"):
@@ -891,6 +1400,7 @@ def main():
 
     print("[main] Shutting down", flush=True)
     manager.stop()
+    yt_manager.stop()
     if ha_listener:
         ha_listener.stop()
 

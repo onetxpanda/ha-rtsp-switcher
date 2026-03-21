@@ -1,3 +1,10 @@
+## 2.0.0
+- Add YouTube Live integration: monitor broadcast status, auto-restart stopped broadcasts
+- Add device flow OAuth setup (no browser needed on the server)
+- Add YouTube tab in UI with live/idle status badge, broadcast title, Restart Broadcast button, auto-restart toggle
+- OAuth credentials (client_id, client_secret) and refresh token stored in settings.yaml
+- Background polling every 30s; auto-restart recreates broadcast bound to existing liveStream
+
 ## 1.3.1
 - Fix UI content getting clipped and unscrollable when window is resized (add min-height: 0 to flex content area, use height: 100% instead of 100vh)
 

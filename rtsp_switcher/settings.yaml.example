@@ -1,4 +1,8 @@
 rtmp_url: "rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY"
+youtube_client_id: ""
+youtube_client_secret: ""
+youtube_refresh_token: ""
+youtube_auto_restart: false
 ha_url: "ws://192.168.1.x:8123/api/websocket"
 ha_token: "YOUR_LONG_LIVED_ACCESS_TOKEN"
 ha_entity_id: "input_select.your_entity"
