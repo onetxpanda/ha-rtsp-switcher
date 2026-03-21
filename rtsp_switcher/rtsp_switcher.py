@@ -147,7 +147,7 @@ def _build_pipeline_string(stream, hwaccel):
     if hwaccel == "nvenc":
         encoder = (
             f"nvh264enc name=enc bitrate={VIDEO_BITRATE_KBPS} "
-            f"gop-size={OUTPUT_FRAMERATE} preset=12 repeat-sequence-header=true"
+            f"gop-size={OUTPUT_FRAMERATE} preset=p5 repeat-sequence-header=true"
         )
         if codec == "h265":
             depay = "rtph265depay"
