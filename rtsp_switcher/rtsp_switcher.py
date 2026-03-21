@@ -189,7 +189,7 @@ class YouTubeManager(threading.Thread):
 
     def _get_active_broadcast(self) -> dict | None:
         result = self._api_get("liveBroadcasts", {
-            "part": "snippet,status", "broadcastStatus": "active", "mine": "true",
+            "part": "snippet,status", "broadcastStatus": "active",
         })
         items = (result or {}).get("items", [])
         return items[0] if items else None
@@ -208,8 +208,7 @@ class YouTubeManager(threading.Thread):
 
     def _get_last_broadcast(self) -> dict | None:
         result = self._api_get("liveBroadcasts", {
-            "part": "snippet,status", "broadcastStatus": "completed",
-            "mine": "true", "maxResults": "1",
+            "part": "snippet,status", "broadcastStatus": "completed", "maxResults": "1",
         })
         items = (result or {}).get("items", [])
         return items[0] if items else None

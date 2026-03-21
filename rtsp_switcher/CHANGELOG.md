@@ -1,3 +1,6 @@
+## 2.0.2
+- Fix YouTube API error: broadcastStatus and mine are mutually exclusive parameters
+
 ## 2.0.1
 - Fix YouTube status not updating after auth (force-poll on Refresh button, poll wakes early via event)
 - Surface API errors in UI instead of silently returning idle
