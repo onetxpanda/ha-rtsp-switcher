@@ -1,6 +1,6 @@
 name: "RTSP Switcher"
 description: "Switches between RTSP camera streams and streams to RTMP (e.g. YouTube Live)."
-version: "1.0.9"
+version: "1.1.0"
 slug: "rtsp_switcher"
 init: false
 arch:
@@ -13,11 +13,10 @@ ingress_port: 8099
 panel_icon: mdi:cctv
 panel_title: "RTSP Switcher"
 
+full_access: true
+
 map:
   - config:rw
-
-devices:
-  - /dev/dri
 
 options:
   rtmp_url: "rtmp://a.rtmp.youtube.com/live2/your-stream-key"
