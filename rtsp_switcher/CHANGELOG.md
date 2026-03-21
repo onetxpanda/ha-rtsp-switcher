@@ -1,0 +1,51 @@
+## 1.3.1
+- Fix UI content getting clipped and unscrollable when window is resized (add min-height: 0 to flex content area, use height: 100% instead of 100vh)
+
+## 1.3.0
+- Redesigned UI with Camera and Settings tabs
+- Full-width snapshot preview below tabs
+- Camera list shows active stream with green Live indicator
+- Tapping a camera row switches the stream
+- Stream switches now route through HA input_select WebSocket (no extra HTTP connections)
+
+## 1.2.3
+- Fix snapshot preview flashing by not resetting image state between refreshes
+
+## 1.2.2
+- Fix API calls through HA ingress using X-Ingress-Path header injection
+
+## 1.2.1
+- Keep settings.yaml write inside config lock for atomicity
+
+## 1.2.0
+- Add React web UI with dynamic config editing
+- Camera list CRUD (add, edit, delete) without restarting
+- JPEG snapshot endpoint served from memory (no filesystem write)
+- All config options editable from the UI and persisted to settings.yaml
+
+## 1.1.5
+- Fix HA service call: use trigger_service instead of call_service
+
+## 1.1.4
+- Sync input_select options from configured streams on HA connect
+
+## 1.1.3
+- Remove startup diagnostics from run.sh
+
+## 1.1.2
+- Add HA connection and stream switch logging
+
+## 1.1.1
+- Switch back to iHD VA-API driver for newer Intel GPUs (i965 only supports up to ~9th gen)
+
+## 1.1.0
+- Fix DRM device access in container using full_access: true in config.yaml
+- Add full VA-API driver stack (iHD, i965, mesa) and vainfo for diagnostics
+- Add gstreamer1.0-va package for vah264dec/vah264enc elements
+
+## 1.0.0
+- Initial release: RTSP-to-RTMP stream switcher as HA addon
+- GStreamer pipeline with VA-API hardware acceleration
+- Home Assistant input_select integration for stream switching
+- Ingress web UI
+- Settings stored in /config/rtsp_switcher/settings.yaml

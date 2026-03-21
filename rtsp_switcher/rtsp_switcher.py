@@ -73,12 +73,13 @@ _WEBUI_HTML = """<!DOCTYPE html>
   --bg: #0f1117; --surface: #181b26; --surface2: #1e2130; --border: #272b3d;
   --text: #dde1f0; --muted: #6b6f8a; --accent: #5b8cf8; --danger: #e05555; --success: #3ecf8e;
 }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+html { height: 100%; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .tabbar { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
 .tab { padding: 14px 22px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .12s; }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-.content { flex: 1; overflow-y: auto; }
+.content { flex: 1; min-height: 0; overflow-y: auto; }
 .snapshot-outer { width: 100%; aspect-ratio: 16/9; background: #000; position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .snapshot-outer img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .snapshot-placeholder { color: var(--muted); font-size: 13px; position: absolute; }
