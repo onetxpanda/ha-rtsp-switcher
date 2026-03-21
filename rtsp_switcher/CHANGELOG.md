@@ -1,3 +1,6 @@
+## 2.1.2
+- Fix scrolling: apply flex layout to #root instead of body so the flex chain actually reaches the scrollable content area
+
 ## 2.1.1
 - Show RTMP stream health in status strip: warning/error indicator when YouTube reports bad or missing stream data
 - Show configuration issues from YouTube (with severity) in the YouTube tab status card

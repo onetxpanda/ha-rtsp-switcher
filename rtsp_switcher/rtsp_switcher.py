@@ -392,8 +392,9 @@ _WEBUI_HTML = """<!DOCTYPE html>
   --bg: #0f1117; --surface: #181b26; --surface2: #1e2130; --border: #272b3d;
   --text: #dde1f0; --muted: #6b6f8a; --accent: #5b8cf8; --danger: #e05555; --success: #3ecf8e;
 }
-html { height: 100%; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+html, body { height: 100%; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; background: var(--bg); color: var(--text); overflow: hidden; }
+#root { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .tabbar { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
 .tab { padding: 12px 20px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .12s; display: flex; align-items: center; }
 .tab:hover { color: var(--text); }
