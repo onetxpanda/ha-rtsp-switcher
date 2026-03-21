@@ -160,21 +160,21 @@ def _build_pipeline_string(stream, hwaccel):
             parser_in = "h264parse config-interval=1"
             decoder = "nvh264dec"
     else:
-        # VA-API: vaapih264enc uses keyframe-period and rate-control instead of
-        # gop-size/preset/repeat-sequence-header. h264parse config-interval=1
-        # handles SPS/PPS injection so repeat-sequence-header is not needed.
+        # VA-API via the newer 'va' plugin (GStreamer 1.22+, replaces gstreamer-vaapi).
+        # vah264enc uses key-int-max for GOP size and rate-control for bitrate mode.
+        # h264parse config-interval=1 handles SPS/PPS injection downstream.
         encoder = (
-            f"vaapih264enc name=enc bitrate={VIDEO_BITRATE_KBPS} "
-            f"keyframe-period={OUTPUT_FRAMERATE} rate-control=vbr"
+            f"vah264enc name=enc bitrate={VIDEO_BITRATE_KBPS} "
+            f"key-int-max={OUTPUT_FRAMERATE} rate-control=vbr"
         )
         if codec == "h265":
             depay = "rtph265depay"
             parser_in = "h265parse config-interval=1"
-            decoder = "vaapih265dec"
+            decoder = "vah265dec"
         else:
             depay = "rtph264depay"
             parser_in = "h264parse config-interval=1"
-            decoder = "vaapih264dec"
+            decoder = "vah264dec"
 
     rotation = stream.get("stream_rotation", 0)
     if rotation == 90:
