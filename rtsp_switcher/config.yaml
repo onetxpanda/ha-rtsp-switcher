@@ -1,6 +1,6 @@
-name: "RTSP Switcher"
-description: "Switches between RTSP camera streams and streams to RTMP (e.g. YouTube Live)."
-version: "2.2.1"
+name: "Youtube Live Manager"
+description: "Switches between RTSP camera streams and manages YouTube Live broadcasts."
+version: "2.2.2"
 slug: "rtsp_switcher"
 init: false
 arch:
@@ -10,8 +10,8 @@ boot: manual
 
 ingress: true
 ingress_port: 8099
-panel_icon: mdi:cctv
-panel_title: "Youtube Live"
+panel_icon: mdi:youtube
+panel_title: "Youtube Live Manager"
 
 full_access: true
 

@@ -1,3 +1,7 @@
+## 2.2.2
+- Rename addon to "Youtube Live Manager"
+- Use YouTube logo (mdi:youtube) in HA sidebar
+
 ## 2.2.1
 - Rename HA sidebar entry to "Youtube Live"
 
