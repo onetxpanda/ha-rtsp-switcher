@@ -1,3 +1,8 @@
+## 2.1.8
+- Show spinner overlay on snapshot when camera switch is in progress
+- Spinner clears automatically when first new frame from the new pipeline arrives
+- Drain stale snapshot queue before starting new pipeline so old frames never show after a switch
+
 ## 2.1.7
 - Increase vibrancy of YouTube status strip colors and active camera row highlight
 

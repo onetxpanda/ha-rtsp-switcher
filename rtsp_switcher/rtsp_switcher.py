@@ -417,6 +417,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; f
 .snapshot-outer { width: 100%; aspect-ratio: 16/9; background: #000; position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .snapshot-outer img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .snapshot-placeholder { color: var(--muted); font-size: 13px; position: absolute; }
+.snapshot-loading { position: absolute; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.snapshot-spinner { width: 32px; height: 32px; border: 3px solid rgba(255,255,255,.15); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
 .camera-section { padding: 12px 16px 20px; }
 .camera-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .camera-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; transition: background .12s, border-color .12s; user-select: none; }
@@ -559,18 +562,20 @@ function Toast({ toast }) {
 }
 
 // ── Snapshot ──────────────────────────────────────────────────────────────────
-function Snapshot({ ts }) {
+function Snapshot({ ts, loading, onFirstLoad }) {
   const [ok, setOk] = useState(false);
+  const onLoad = () => { setOk(true); if (loading) onFirstLoad(); };
   return (
     <div className="snapshot-outer">
       <img
         src={`${BASE}/api/snapshot?t=${ts}`}
         style={{ display: ok ? 'block' : 'none' }}
-        onLoad={() => setOk(true)}
+        onLoad={onLoad}
         onError={() => setOk(false)}
         alt=""
       />
-      {!ok && <span className="snapshot-placeholder">No snapshot available</span>}
+      {!ok && !loading && <span className="snapshot-placeholder">No snapshot available</span>}
+      {loading && <div className="snapshot-loading"><div className="snapshot-spinner" /></div>}
     </div>
   );
 }
@@ -627,11 +632,20 @@ function CameraTab({ config, onConfigChange, showToast }) {
   const [status, setStatus] = useState(null);
   const [ts, setTs] = useState(Date.now());
   const [modal, setModal] = useState(null);
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
+  const seenGenRef = React.useRef(null);
 
   useEffect(() => {
     const tick = () => {
-      fetch(`${BASE}/api/status`).then(r => r.json()).then(setStatus).catch(() => {});
-      setTs(Date.now());
+      fetch(`${BASE}/api/status`).then(r => r.json()).then(data => {
+        setStatus(data);
+        const gen = data.pipeline_generation ?? null;
+        if (gen !== null && seenGenRef.current !== null && gen !== seenGenRef.current) {
+          setSnapshotLoading(true);
+        }
+        if (gen !== null) seenGenRef.current = gen;
+        setTs(Date.now());
+      }).catch(() => {});
     };
     tick();
     const id = setInterval(tick, 3000);
@@ -669,7 +683,7 @@ function CameraTab({ config, onConfigChange, showToast }) {
 
   return (
     <div className="content">
-      <Snapshot ts={ts} />
+      <Snapshot ts={ts} loading={snapshotLoading} onFirstLoad={() => setSnapshotLoading(false)} />
       <div className="camera-section">
         <div className="camera-list">
           {streams.map((s, i) => {
@@ -1083,7 +1097,8 @@ def _api_switch():
 def _api_status():
     m = _manager_ref
     stream = m.current_stream if m else None
-    return jsonify({"active_stream": stream, "streaming": stream is not None})
+    gen = m.pipeline_generation if m else 0
+    return jsonify({"active_stream": stream, "streaming": stream is not None, "pipeline_generation": gen})
 
 
 @_flask_app.route("/api/youtube/status")
@@ -1495,6 +1510,12 @@ class PipelineManager(threading.Thread):
         self._process = None
         self._stopping = threading.Event()
         self._snapshot_queue = snapshot_queue
+        self._pipeline_generation = 0
+
+    @property
+    def pipeline_generation(self):
+        with self._lock:
+            return self._pipeline_generation
 
     @property
     def current_stream(self):
@@ -1556,6 +1577,13 @@ class PipelineManager(threading.Thread):
                     self._stopping.wait(2)
                 continue
 
+            # Drain stale snapshots before starting new pipeline
+            while True:
+                try:
+                    self._snapshot_queue.get_nowait()
+                except Exception:
+                    break
+
             p = multiprocessing.Process(
                 target=pipeline_worker,
                 args=(stream, cfg, self._snapshot_queue),
@@ -1565,6 +1593,7 @@ class PipelineManager(threading.Thread):
             print(f"[manager] Started pipeline process {p.pid} for {stream_name!r}", flush=True)
             with self._lock:
                 self._process = p
+                self._pipeline_generation += 1
 
             p.join()
 
