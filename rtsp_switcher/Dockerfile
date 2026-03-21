@@ -2,6 +2,7 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV RTSP_HWACCEL=vaapi
+ENV LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Python + GObject introspection bindings
@@ -21,10 +22,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-plugins-bad \
     gstreamer1.0-plugins-ugly \
     gstreamer1.0-libav \
-    # Intel iHD media driver
-    intel-media-va-driver-non-free \
-    libva-drm2 \
+    # VA-API plugin (vah264dec, vah264enc, etc.) - separate package on Ubuntu 24.04
+    gstreamer1.0-va \
+    # VA-API drivers
     libva2 \
+    libva-drm2 \
+    libva-dev \
+    i965-va-driver \
+    mesa-va-drivers \
+    intel-media-va-driver-non-free \
+    vainfo \
     # rtmpsink dependency
     librtmp1 \
     # voaacenc dependency
