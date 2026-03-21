@@ -332,6 +332,7 @@ class HomeAssistantListener(threading.Thread):
                 pass
 
     def run(self):
+        print(f"[ha] Connecting to {HA_URL}, entity={HA_ENTITY_ID}", flush=True)
         self._client = WebsocketClient(HA_URL, HA_TOKEN)
         while not self._stop.is_set():
             try:
@@ -340,10 +341,11 @@ class HomeAssistantListener(threading.Thread):
                 try:
                     state_obj = self._client.get_state(entity_id=HA_ENTITY_ID)
                     state = getattr(state_obj, "state", None)
+                    print(f"[ha] Connected. Initial state: {state!r}", flush=True)
                     if state:
                         self._on_state(state)
                 except Exception as exc:
-                    print(f"[ha] Initial state error: {exc}")
+                    print(f"[ha] Initial state error: {exc}", flush=True)
                 with self._client.listen_events("state_changed") as events:
                     for event in events:
                         if self._stop.is_set():
@@ -359,6 +361,7 @@ class HomeAssistantListener(threading.Thread):
                             state = getattr(new_state, "state", None) if new_state else None
                         if not entity_id or entity_id != HA_ENTITY_ID:
                             continue
+                        print(f"[ha] State change: {entity_id} -> {state!r}", flush=True)
                         if state:
                             self._on_state(state)
             except Exception as exc:
@@ -387,12 +390,14 @@ class PipelineManager(threading.Thread):
     def switch_stream(self, name):
         stream_names = [s["stream_name"] for s in STREAM_URLS]
         if name not in stream_names:
-            print(f"[manager] Unknown stream: {name!r}")
+            print(f"[manager] Unknown stream: {name!r} (known: {stream_names})", flush=True)
             return
         with self._lock:
             if self._current_stream == name:
+                print(f"[manager] Already on stream {name!r}, ignoring", flush=True)
                 return
             self._current_stream = name
+        print(f"[manager] Switching to {name!r}", flush=True)
         self._terminate_current()
 
     def _terminate_current(self):
