@@ -3,6 +3,8 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
 FROM ${BUILD_FROM}
 
+ENV RTSP_HWACCEL=vaapi
+
 # Enable community repo for gst-plugins-bad/ugly/libav and VA-API packages
 RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories \
   && apk update && apk add --no-cache \

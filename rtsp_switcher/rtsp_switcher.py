@@ -137,24 +137,42 @@ def _quote_uri(uri):
     return '"' + uri.replace('"', '\\"') + '"'
 
 
-def _build_pipeline_string(stream):
-    encoder = (
-        f"nvh264enc name=enc bitrate={VIDEO_BITRATE_KBPS} "
-        "preset=12 gop-size=30 repeat-sequence-header=true"
-    )
+def _build_pipeline_string(stream, hwaccel):
     parser = "h264parse config-interval=1"
     caps = "video/x-h264,profile=high"
     mux = "flvmux"
 
     codec = stream.get("stream_codec", "h264").lower()
-    if codec == "h265":
-        depay = "rtph265depay"
-        parser_in = "h265parse config-interval=1"
-        decoder = "nvh265dec"
+
+    if hwaccel == "nvenc":
+        encoder = (
+            f"nvh264enc name=enc bitrate={VIDEO_BITRATE_KBPS} "
+            f"gop-size={OUTPUT_FRAMERATE} preset=12 repeat-sequence-header=true"
+        )
+        if codec == "h265":
+            depay = "rtph265depay"
+            parser_in = "h265parse config-interval=1"
+            decoder = "nvh265dec"
+        else:
+            depay = "rtph264depay"
+            parser_in = "h264parse config-interval=1"
+            decoder = "nvh264dec"
     else:
-        depay = "rtph264depay"
-        parser_in = "h264parse config-interval=1"
-        decoder = "nvh264dec"
+        # VA-API: vaapih264enc uses keyframe-period and rate-control instead of
+        # gop-size/preset/repeat-sequence-header. h264parse config-interval=1
+        # handles SPS/PPS injection so repeat-sequence-header is not needed.
+        encoder = (
+            f"vaapih264enc name=enc bitrate={VIDEO_BITRATE_KBPS} "
+            f"keyframe-period={OUTPUT_FRAMERATE} rate-control=vbr"
+        )
+        if codec == "h265":
+            depay = "rtph265depay"
+            parser_in = "h265parse config-interval=1"
+            decoder = "vaapih265dec"
+        else:
+            depay = "rtph264depay"
+            parser_in = "h264parse config-interval=1"
+            decoder = "vaapih264dec"
 
     rotation = stream.get("stream_rotation", 0)
     if rotation == 90:
@@ -173,7 +191,7 @@ def _build_pipeline_string(stream):
         f"{depay} name=depay0 ! {parser_in} name=parse0 ! "
         "queue name=preq0 ! "
         f"{decoder} name=dec0 ! "
-        f"{flip}videoconvert ! videoscale ! videorate ! "
+        f"videoconvert ! {flip}videoscale ! videorate ! "
         f"video/x-raw,width={OUTPUT_WIDTH},height={OUTPUT_HEIGHT},"
         f"framerate={OUTPUT_FRAMERATE}/1 ! "
         "queue name=postq0 ! "
@@ -200,13 +218,15 @@ def pipeline_worker(stream_name):
 
     Gst.init(None)
 
+    hwaccel = os.environ.get("RTSP_HWACCEL", "vaapi")
+
     stream = next((s for s in STREAM_URLS if s["stream_name"] == stream_name), None)
     if stream is None:
         print(f"[worker] Unknown stream name: {stream_name!r}", flush=True)
         sys.exit(1)
 
-    pipeline_str = _build_pipeline_string(stream)
-    print(f"[worker] Starting pipeline for {stream_name!r}", flush=True)
+    pipeline_str = _build_pipeline_string(stream, hwaccel)
+    print(f"[worker] Starting pipeline for {stream_name!r} (hwaccel={hwaccel})", flush=True)
 
     try:
         pipeline = Gst.parse_launch(pipeline_str)
