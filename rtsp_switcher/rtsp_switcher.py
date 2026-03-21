@@ -739,8 +739,8 @@ function SettingsTab({ config, onConfigChange, showToast }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const num = (k, v) => set(k, parseInt(v) || 0);
 
-  const currentRes = findResolution(form.output_width, form.output_height, form.output_framerate);
-  const currentBr  = findBitrate(form.video_bitrate_kbps);
+  const currentRes = findResolution(form.output_width, form.output_height, form.output_framerate) || YT_RESOLUTIONS[0];
+  const currentBr  = findBitrate(form.video_bitrate_kbps) || YT_BITRATES[0];
 
   const setResolution = (label) => {
     const r = YT_RESOLUTIONS.find(x => x.label === label);
@@ -766,15 +766,13 @@ function SettingsTab({ config, onConfigChange, showToast }) {
             <div className="field field-full"><label>RTMP URL</label><input value={form.rtmp_url || ''} onChange={e => set('rtmp_url', e.target.value)} placeholder="rtmp://a.rtmp.youtube.com/live2/..." /></div>
             <div className="field">
               <label>Resolution</label>
-              <select value={currentRes?.label || ''} onChange={e => setResolution(e.target.value)}>
-                {!currentRes && <option value="">Custom ({form.output_width}x{form.output_height} @ {form.output_framerate}fps)</option>}
+              <select value={currentRes.label} onChange={e => setResolution(e.target.value)}>
                 {YT_RESOLUTIONS.map(r => <option key={r.label} value={r.label}>{r.label}</option>)}
               </select>
             </div>
             <div className="field">
               <label>Video Bitrate</label>
-              <select value={currentBr?.label || ''} onChange={e => setBitrate(e.target.value)}>
-                {!currentBr && <option value="">Custom ({form.video_bitrate_kbps} kbps)</option>}
+              <select value={currentBr.label} onChange={e => setBitrate(e.target.value)}>
                 {YT_BITRATES.map(b => <option key={b.label} value={b.label}>{b.label}</option>)}
               </select>
             </div>

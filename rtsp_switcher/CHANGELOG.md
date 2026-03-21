@@ -1,3 +1,6 @@
+## 2.1.5
+- Remove custom fallback from resolution and bitrate dropdowns; presets only
+
 ## 2.1.4
 - Replace width/height/framerate inputs with a single YouTube resolution dropdown (360p–4K/2160p60)
 - Replace bitrate kbps input with Mbps dropdown (2–50 Mbps); values stored as kbps internally
