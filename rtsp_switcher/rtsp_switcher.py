@@ -331,6 +331,19 @@ class HomeAssistantListener(threading.Thread):
             except Exception:
                 pass
 
+    def _sync_entity(self):
+        stream_names = [s["stream_name"] for s in STREAM_URLS]
+        try:
+            self._client.call_service(
+                "input_select", "set_options",
+                entity_id=HA_ENTITY_ID,
+                options=stream_names,
+            )
+            print(f"[ha] Set options on {HA_ENTITY_ID}: {stream_names}", flush=True)
+        except Exception as exc:
+            print(f"[ha] Could not set options on {HA_ENTITY_ID}: {exc}", flush=True)
+            print(f"[ha] Create an input_select entity with entity_id {HA_ENTITY_ID!r} in Home Assistant", flush=True)
+
     def run(self):
         print(f"[ha] Connecting to {HA_URL}, entity={HA_ENTITY_ID}", flush=True)
         self._client = WebsocketClient(HA_URL, HA_TOKEN)
@@ -338,6 +351,7 @@ class HomeAssistantListener(threading.Thread):
             try:
                 if hasattr(self._client, "__enter__"):
                     self._client.__enter__()
+                self._sync_entity()
                 try:
                     state_obj = self._client.get_state(entity_id=HA_ENTITY_ID)
                     state = getattr(state_obj, "state", None)
