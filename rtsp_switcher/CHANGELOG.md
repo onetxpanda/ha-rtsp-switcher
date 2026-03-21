@@ -1,3 +1,9 @@
+## 2.1.0
+- Replace tab text with icons (camera, YouTube logo, settings gear)
+- Add persistent YouTube status strip below tab bar: live/idle badge, start time, elapsed duration, broadcast title
+- YouTube tab shows start time / ended time in the status card
+- Strip and YouTube tab share a single status poll (no duplicate requests)
+
 ## 2.0.3
 - Broadcast restart now copies all writable settings from the last broadcast (contentDetails: dvr, encryption, embed, latency preference, monitor stream, captions type, projection, auto-start/stop; status: madeForKids; snippet: title, description)
 

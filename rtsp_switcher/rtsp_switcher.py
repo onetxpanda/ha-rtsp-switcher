@@ -96,7 +96,8 @@ class YouTubeManager(threading.Thread):
         self._access_token: str | None = None
         self._token_expires_at: float = 0.0
         self._status: dict = {
-            "live": False, "broadcast_id": None, "title": None, "stream_health": None, "last_error": None,
+            "live": False, "broadcast_id": None, "title": None, "stream_health": None,
+            "last_error": None, "started_at": None, "ended_at": None,
         }
         self._auto_restart: bool = False
         self._stopping = threading.Event()
@@ -308,16 +309,24 @@ class YouTubeManager(threading.Thread):
             if active:
                 snippet = active.get("snippet", {})
                 with self._lock:
+                    prev_live = self._status.get("live", False)
                     self._status = {
                         "live": True,
                         "broadcast_id": active.get("id"),
                         "title": snippet.get("title"),
                         "stream_health": None,
                         "last_error": None,
+                        "started_at": snippet.get("actualStartTime"),
+                        "ended_at": self._status.get("ended_at"),
                     }
             else:
                 with self._lock:
-                    self._status = {"live": False, "broadcast_id": None, "title": None, "stream_health": None, "last_error": None}
+                    prev_live = self._status.get("live", False)
+                    ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if prev_live else self._status.get("ended_at")
+                    self._status = {
+                        "live": False, "broadcast_id": None, "title": None, "stream_health": None,
+                        "last_error": None, "started_at": None, "ended_at": ended_at,
+                    }
                     auto = self._auto_restart
                 if auto:
                     print("[youtube] Broadcast not live, auto-restarting...", flush=True)
@@ -375,9 +384,12 @@ _WEBUI_HTML = """<!DOCTYPE html>
 html { height: 100%; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .tabbar { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
-.tab { padding: 14px 22px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .12s; }
+.tab { padding: 12px 20px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .12s; display: flex; align-items: center; }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab svg { display: block; }
+.yt-strip { display: flex; align-items: center; gap: 10px; padding: 7px 14px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; min-height: 36px; }
+.yt-strip-time { font-size: 11px; color: var(--muted); }
 .content { flex: 1; min-height: 0; overflow-y: auto; }
 .snapshot-outer { width: 100%; aspect-ratio: 16/9; background: #000; position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .snapshot-outer img { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -437,6 +449,64 @@ input[type="password"] { font-family: monospace; }
 <script type="text/babel">
 const { useState, useEffect, useCallback } = React;
 const BASE = window.INGRESS_PATH || '';
+
+// ── Icons ─────────────────────────────────────────────────────────────────────
+const IconCamera = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
+    <circle cx="12" cy="13" r="3"/>
+  </svg>
+);
+const IconSettings = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  </svg>
+);
+const IconYouTube = () => (
+  <svg width="22" height="20" viewBox="0 0 24 24">
+    <path fill="#FF0000" d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31.6 31.6 0 0 0 0 12a31.6 31.6 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1C4.5 20.4 12 20.4 12 20.4s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31.6 31.6 0 0 0 24 12a31.6 31.6 0 0 0-.5-5.8z"/>
+    <polygon fill="#fff" points="9.6,15.6 15.8,12 9.6,8.4"/>
+  </svg>
+);
+
+// ── Time formatting ───────────────────────────────────────────────────────────
+function fmtTime(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+function fmtElapsed(iso) {
+  if (!iso) return null;
+  const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (diff < 60) return `${diff}s`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  const h = Math.floor(diff / 3600), m = Math.floor((diff % 3600) / 60);
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+// ── YouTube status strip ──────────────────────────────────────────────────────
+function YtStrip({ yt }) {
+  const [, tick] = useState(0);
+  useEffect(() => { const id = setInterval(() => tick(n => n + 1), 30000); return () => clearInterval(id); }, []);
+  if (!yt?.configured) return <div className="yt-strip" />;
+  const live = yt.live;
+  return (
+    <div className="yt-strip">
+      <span className={`yt-status-badge ${live ? 'live' : 'idle'}`}>{live ? 'Live' : 'Idle'}</span>
+      {live && yt.started_at && (
+        <span className="yt-strip-time">since {fmtTime(yt.started_at)} &middot; {fmtElapsed(yt.started_at)}</span>
+      )}
+      {!live && yt.ended_at && (
+        <span className="yt-strip-time">ended {fmtTime(yt.ended_at)}</span>
+      )}
+      {live && yt.title && (
+        <span className="yt-strip-time" style={{ marginLeft: 'auto', maxWidth: '50%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{yt.title}</span>
+      )}
+    </div>
+  );
+}
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function Toast({ toast }) {
@@ -633,8 +703,7 @@ function SettingsTab({ config, onConfigChange, showToast }) {
 }
 
 // ── YouTube tab ───────────────────────────────────────────────────────────────
-function YouTubeTab({ config, onConfigChange, showToast }) {
-  const [yt, setYt] = useState(null);
+function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
   const [authFlow, setAuthFlow] = useState(null); // {user_code, verification_url}
   const [polling, setPolling] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -643,13 +712,6 @@ function YouTubeTab({ config, onConfigChange, showToast }) {
   useEffect(() => {
     if (config) setCreds({ youtube_client_id: config.youtube_client_id || '', youtube_client_secret: config.youtube_client_secret || '' });
   }, [config]);
-
-  useEffect(() => {
-    const tick = () => fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {});
-    tick();
-    const id = setInterval(tick, 15000);
-    return () => clearInterval(id);
-  }, []);
 
   // While device flow is active, poll every 5s
   useEffect(() => {
@@ -728,7 +790,9 @@ function YouTubeTab({ config, onConfigChange, showToast }) {
             <h2 style={{ marginBottom: 0 }}>Broadcast Status</h2>
             <span className={`yt-status-badge ${live ? 'live' : 'idle'}`}>{live ? 'Live' : 'Idle'}</span>
           </div>
-          {yt?.title && <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 12 }}>{yt.title}</div>}
+          {yt?.title && <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 4 }}>{yt.title}</div>}
+          {live && yt?.started_at && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>Started {fmtTime(yt.started_at)} &middot; {fmtElapsed(yt.started_at)}</div>}
+          {!live && yt?.ended_at && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>Ended {fmtTime(yt.ended_at)}</div>}
           {!configured && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>Not authorised — complete OAuth setup below.</div>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: yt?.last_error ? 10 : 0 }}>
             <button className="btn btn-primary" onClick={doRestart} disabled={restarting || !configured}>
@@ -798,9 +862,17 @@ function App() {
   const [tab, setTab] = useState('cameras');
   const [config, setConfig] = useState(null);
   const [toast, setToast] = useState(null);
+  const [yt, setYt] = useState(null);
 
   useEffect(() => {
     fetch(`${BASE}/api/config`).then(r => r.json()).then(setConfig).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const tick = () => fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {});
+    tick();
+    const id = setInterval(tick, 15000);
+    return () => clearInterval(id);
   }, []);
 
   const showToast = useCallback((msg, ok) => {
@@ -811,12 +883,13 @@ function App() {
   return (
     <>
       <div className="tabbar">
-        <div className={`tab${tab === 'cameras' ? ' active' : ''}`} onClick={() => setTab('cameras')}>Cameras</div>
-        <div className={`tab${tab === 'youtube' ? ' active' : ''}`} onClick={() => setTab('youtube')}>YouTube</div>
-        <div className={`tab${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}>Settings</div>
+        <div className={`tab${tab === 'cameras' ? ' active' : ''}`} onClick={() => setTab('cameras')} title="Cameras"><IconCamera /></div>
+        <div className={`tab${tab === 'youtube' ? ' active' : ''}`} onClick={() => setTab('youtube')} title="YouTube"><IconYouTube /></div>
+        <div className={`tab${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')} title="Settings"><IconSettings /></div>
       </div>
+      <YtStrip yt={yt} />
       {tab === 'cameras'  && <CameraTab config={config} onConfigChange={setConfig} showToast={showToast} />}
-      {tab === 'youtube'  && <YouTubeTab config={config} onConfigChange={setConfig} showToast={showToast} />}
+      {tab === 'youtube'  && <YouTubeTab config={config} onConfigChange={setConfig} showToast={showToast} yt={yt} setYt={setYt} />}
       {tab === 'settings' && <SettingsTab config={config} onConfigChange={setConfig} showToast={showToast} />}
       <Toast toast={toast} />
     </>
