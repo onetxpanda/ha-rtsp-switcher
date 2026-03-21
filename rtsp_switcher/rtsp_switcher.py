@@ -7,6 +7,8 @@ import sys
 import threading
 import time
 
+import json
+
 import yaml
 from flask import Flask, Response, abort, jsonify, request
 from homeassistant_api import WebsocketClient
@@ -64,6 +66,7 @@ _WEBUI_HTML = """<!DOCTYPE html>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!--INGRESS_PATH-->
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -121,6 +124,7 @@ input[type="password"] { font-family: monospace; }
 <div id="root"></div>
 <script type="text/babel">
 const { useState, useEffect, useCallback, useRef } = React;
+const BASE = window.INGRESS_PATH || '';
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar({ page, onNavigate }) {
@@ -156,7 +160,7 @@ function Snapshot({ ts }) {
   return (
     <div className="snapshot-wrap">
       <img
-        src={`/api/snapshot?t=${ts}`}
+        src={`${BASE}/api/snapshot?t=${ts}`}
         style={{ display: state === 'ok' ? 'block' : 'none' }}
         onLoad={() => setState('ok')}
         onError={() => setState('error')}
@@ -178,7 +182,7 @@ function LivePage() {
 
   useEffect(() => {
     const tick = () => {
-      fetch('/api/status').then(r => r.json()).then(setStatus).catch(() => {});
+      fetch(`${BASE}/api/status`).then(r => r.json()).then(setStatus).catch(() => {});
       setTs(Date.now());
     };
     tick();
@@ -427,7 +431,7 @@ function SettingsPage({ config, onConfigChange, showToast }) {
 // ── Shared helpers ────────────────────────────────────────────────────────────
 async function saveConfig(cfg) {
   try {
-    const r = await fetch('/api/config', {
+    const r = await fetch(`${BASE}/api/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(cfg),
@@ -443,7 +447,7 @@ function App() {
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
-    fetch('/api/config').then(r => r.json()).then(setConfig).catch(() => {});
+    fetch(`${BASE}/api/config`).then(r => r.json()).then(setConfig).catch(() => {});
   }, []);
 
   const showToast = useCallback((msg, ok) => {
@@ -475,7 +479,12 @@ _manager_ref = None
 
 @_flask_app.route("/")
 def _webui_index():
-    return _WEBUI_HTML, 200, {"Content-Type": "text/html; charset=utf-8"}
+    ingress_path = request.headers.get("X-Ingress-Path", "")
+    html = _WEBUI_HTML.replace(
+        "<!--INGRESS_PATH-->",
+        f"<script>window.INGRESS_PATH={json.dumps(ingress_path)};</script>",
+    )
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
 @_flask_app.route("/api/config")
