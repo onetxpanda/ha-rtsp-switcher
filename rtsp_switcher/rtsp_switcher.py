@@ -6,6 +6,7 @@ import threading
 import time
 
 import yaml
+from flask import Flask
 from homeassistant_api import WebsocketClient
 
 import gi
@@ -35,6 +36,107 @@ RTSP_LATENCY_MS = _cfg.get("rtsp_latency_ms", 200)
 RECONNECT_DELAY_SEC = _cfg.get("reconnect_delay_sec", 2)
 OUTPUT_STALL_TIMEOUT_SEC = _cfg.get("output_stall_timeout_sec", 10)
 STARTUP_OUTPUT_TIMEOUT_SEC = _cfg.get("startup_output_timeout_sec", 20)
+
+
+_WEBUI_PORT = 8099
+
+_WEBUI_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RTSP Switcher</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    background: #111318;
+    color: #e2e3e8;
+    padding: 24px;
+  }
+  h1 { font-size: 20px; font-weight: 500; margin-bottom: 20px; color: #fff; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #1c1f27;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  th {
+    text-align: left;
+    padding: 12px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #8b8fa8;
+    background: #14161c;
+    border-bottom: 1px solid #2a2d38;
+  }
+  td {
+    padding: 12px 16px;
+    border-bottom: 1px solid #22252f;
+    color: #d4d5de;
+    vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #21242e; }
+  .mono { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; color: #a8c7fa; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+    background: #1e3a5f;
+    color: #7ab4f5;
+  }
+</style>
+</head>
+<body>
+<h1>Configured Streams</h1>
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>URL</th>
+      <th>Resolution</th>
+      <th>Framerate</th>
+      <th>Codec</th>
+      <th>Rotation</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in streams %}
+    <tr>
+      <td>{{ s.stream_name }}</td>
+      <td class="mono">{{ s.stream_url }}</td>
+      <td>{{ s.stream_width }}&times;{{ s.stream_height }}</td>
+      <td>{{ s.stream_framerate }} fps</td>
+      <td><span class="badge">{{ s.stream_codec | upper }}</span></td>
+      <td>{{ s.get("stream_rotation", 0) }}&deg;</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</body>
+</html>"""
+
+_flask_app = Flask(__name__)
+
+
+@_flask_app.route("/")
+def _webui_index():
+    from flask import render_template_string
+    return render_template_string(_WEBUI_HTML, streams=STREAM_URLS)
+
+
+def _start_webserver():
+    import logging
+    log = logging.getLogger("werkzeug")
+    log.setLevel(logging.ERROR)
+    _flask_app.run(host="0.0.0.0", port=_WEBUI_PORT, debug=False, use_reloader=False)
 
 
 def _quote_uri(uri):
@@ -337,6 +439,9 @@ def main():
     if hasattr(GLib, "unix_signal_add"):
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, _handle_sigint)
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, _handle_sigint)
+
+    web_thread = threading.Thread(target=_start_webserver, daemon=True)
+    web_thread.start()
 
     switcher.start_stream(STREAM_URLS[0]["stream_name"])
     switcher.start_watchdog()

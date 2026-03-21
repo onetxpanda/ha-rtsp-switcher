@@ -8,6 +8,11 @@ arch:
 startup: application
 boot: manual
 
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:cctv
+panel_title: "RTSP Switcher"
+
 devices:
   - /dev/dri
 

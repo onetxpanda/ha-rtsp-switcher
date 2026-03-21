@@ -1,2 +1,3 @@
 homeassistant_api
 pyyaml
+flask
