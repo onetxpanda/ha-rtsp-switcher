@@ -1,3 +1,6 @@
+## 2.2.1
+- Rename HA sidebar entry to "Youtube Live"
+
 ## 2.2.0
 - Auto-detect stream resolution, codec, and framerate via ffprobe; these fields are no longer manually entered
 - Add camera: detection runs automatically on save; save is blocked if detection fails (error shown in modal)
