@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
+import multiprocessing
 import os
 import pathlib
 import signal
+import sys
 import threading
 import time
 
 import yaml
-from flask import Flask
+from flask import Flask, render_template_string
 from homeassistant_api import WebsocketClient
-
-import gi
-
-gi.require_version("Gst", "1.0")
-from gi.repository import Gst, GLib
 
 
 def _load_config():
@@ -36,7 +33,6 @@ RTSP_LATENCY_MS = _cfg.get("rtsp_latency_ms", 200)
 RECONNECT_DELAY_SEC = _cfg.get("reconnect_delay_sec", 2)
 OUTPUT_STALL_TIMEOUT_SEC = _cfg.get("output_stall_timeout_sec", 10)
 STARTUP_OUTPUT_TIMEOUT_SEC = _cfg.get("startup_output_timeout_sec", 20)
-
 
 _WEBUI_PORT = 8099
 
@@ -128,19 +124,178 @@ _flask_app = Flask(__name__)
 
 @_flask_app.route("/")
 def _webui_index():
-    from flask import render_template_string
     return render_template_string(_WEBUI_HTML, streams=STREAM_URLS)
 
 
 def _start_webserver():
     import logging
-    log = logging.getLogger("werkzeug")
-    log.setLevel(logging.ERROR)
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
     _flask_app.run(host="0.0.0.0", port=_WEBUI_PORT, debug=False, use_reloader=False)
 
 
 def _quote_uri(uri):
     return '"' + uri.replace('"', '\\"') + '"'
+
+
+def _build_pipeline_string(stream):
+    encoder = (
+        f"nvh264enc name=enc bitrate={VIDEO_BITRATE_KBPS} "
+        "preset=12 gop-size=30 repeat-sequence-header=true"
+    )
+    parser = "h264parse config-interval=1"
+    caps = "video/x-h264,profile=high"
+    mux = "flvmux"
+
+    codec = stream.get("stream_codec", "h264").lower()
+    if codec == "h265":
+        depay = "rtph265depay"
+        parser_in = "h265parse config-interval=1"
+        decoder = "nvh265dec"
+    else:
+        depay = "rtph264depay"
+        parser_in = "h264parse config-interval=1"
+        decoder = "nvh264dec"
+
+    rotation = stream.get("stream_rotation", 0)
+    if rotation == 90:
+        flip = "videoflip method=clockwise ! "
+    elif rotation == 180:
+        flip = "videoflip method=rotate-180 ! "
+    elif rotation == 270:
+        flip = "videoflip method=counterclockwise ! "
+    else:
+        flip = ""
+
+    parts = [
+        f"rtspsrc name=src0 location={_quote_uri(stream['stream_url'])} "
+        f"protocols=tcp tcp-timeout=30000000 latency={RTSP_LATENCY_MS} ! "
+        "queue name=qsrc0 ! "
+        f"{depay} name=depay0 ! {parser_in} name=parse0 ! "
+        "queue name=preq0 ! "
+        f"{decoder} name=dec0 ! "
+        f"{flip}videoconvert ! videoscale ! videorate ! "
+        f"video/x-raw,width={OUTPUT_WIDTH},height={OUTPUT_HEIGHT},"
+        f"framerate={OUTPUT_FRAMERATE}/1 ! "
+        "queue name=postq0 ! "
+        f"{encoder} ! "
+        f"{caps} ! {parser} ! {mux} streamable=true name=mux ! "
+        f"rtmpsink location={RTMP_URL}",
+        "audiotestsrc is-live=true wave=silence ! "
+        "audio/x-raw,channels=2,rate=44100 ! "
+        "audioconvert ! audioresample ! "
+        "voaacenc bitrate=128000 ! aacparse ! mux.",
+    ]
+    return " ".join(parts)
+
+
+def pipeline_worker(stream_name):
+    """Runs in a child process. Owns GStreamer entirely. Exits when the pipeline stops."""
+    os.environ.setdefault("LIBVA_DRIVER_NAME", "iHD")
+    os.environ.setdefault("LIBVA_DRM_DEVICE", "/dev/dri/renderD128")
+    os.environ.setdefault("GST_VAAPI_DRM_DEVICE", "/dev/dri/renderD128")
+
+    import gi
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst, GLib
+
+    Gst.init(None)
+
+    stream = next((s for s in STREAM_URLS if s["stream_name"] == stream_name), None)
+    if stream is None:
+        print(f"[worker] Unknown stream name: {stream_name!r}", flush=True)
+        sys.exit(1)
+
+    pipeline_str = _build_pipeline_string(stream)
+    print(f"[worker] Starting pipeline for {stream_name!r}", flush=True)
+
+    try:
+        pipeline = Gst.parse_launch(pipeline_str)
+    except Exception as exc:
+        print(f"[worker] Failed to parse pipeline: {exc}", flush=True)
+        sys.exit(1)
+
+    loop = GLib.MainLoop()
+    exit_code = [0]
+    last_output_time = [None]
+    started_at = time.monotonic()
+
+    def on_output_probe(_pad, _info):
+        last_output_time[0] = time.monotonic()
+        return Gst.PadProbeReturn.OK
+
+    enc = pipeline.get_by_name("enc")
+    if enc:
+        pad = enc.get_static_pad("src")
+        if pad:
+            pad.add_probe(Gst.PadProbeType.BUFFER, on_output_probe)
+
+    def check_stalled():
+        now = time.monotonic()
+        last = last_output_time[0]
+        if last is None:
+            if now - started_at >= STARTUP_OUTPUT_TIMEOUT_SEC:
+                print(
+                    f"[worker] No output for {STARTUP_OUTPUT_TIMEOUT_SEC}s after start",
+                    flush=True,
+                )
+                exit_code[0] = 1
+                pipeline.set_state(Gst.State.NULL)
+                loop.quit()
+                return False
+        elif now - last >= OUTPUT_STALL_TIMEOUT_SEC:
+            print(f"[worker] Output stalled for {OUTPUT_STALL_TIMEOUT_SEC}s", flush=True)
+            exit_code[0] = 1
+            pipeline.set_state(Gst.State.NULL)
+            loop.quit()
+            return False
+        return True
+
+    GLib.timeout_add_seconds(1, check_stalled)
+
+    bus = pipeline.get_bus()
+    bus.add_signal_watch()
+
+    def on_bus_message(_bus, message):
+        msg_type = message.type
+        if msg_type == Gst.MessageType.ERROR:
+            err, dbg = message.parse_error()
+            print(f"[worker] Error: {err} ({dbg})", flush=True)
+            exit_code[0] = 1
+            pipeline.set_state(Gst.State.NULL)
+            loop.quit()
+        elif msg_type == Gst.MessageType.WARNING:
+            warn, _ = message.parse_warning()
+            print(f"[worker] Warning: {warn}", flush=True)
+        elif msg_type == Gst.MessageType.EOS:
+            print("[worker] EOS received", flush=True)
+            exit_code[0] = 1
+            pipeline.set_state(Gst.State.NULL)
+            loop.quit()
+        elif msg_type == Gst.MessageType.STATE_CHANGED:
+            if message.src == pipeline:
+                old, new, pending = message.parse_state_changed()
+                print(
+                    f"[worker] State: {old.value_nick} -> {new.value_nick}"
+                    f" (pending: {pending.value_nick})",
+                    flush=True,
+                )
+
+    bus.connect("message", on_bus_message)
+
+    def on_sigterm(*_):
+        pipeline.set_state(Gst.State.NULL)
+        loop.quit()
+
+    signal.signal(signal.SIGTERM, on_sigterm)
+    signal.signal(signal.SIGINT, on_sigterm)
+
+    pipeline.set_state(Gst.State.PLAYING)
+    try:
+        loop.run()
+    finally:
+        bus.remove_signal_watch()
+
+    sys.exit(exit_code[0])
 
 
 class HomeAssistantListener(threading.Thread):
@@ -170,7 +325,7 @@ class HomeAssistantListener(threading.Thread):
                     if state:
                         self._on_state(state)
                 except Exception as exc:
-                    print(f"Home Assistant initial state error: {exc}")
+                    print(f"[ha] Initial state error: {exc}")
                 with self._client.listen_events("state_changed") as events:
                     for event in events:
                         if self._stop.is_set():
@@ -191,7 +346,7 @@ class HomeAssistantListener(threading.Thread):
             except Exception as exc:
                 if self._stop.is_set():
                     break
-                print(f"Home Assistant websocket error: {exc}")
+                print(f"[ha] Websocket error: {exc}")
                 time.sleep(2)
             finally:
                 if hasattr(self._client, "__exit__"):
@@ -201,264 +356,106 @@ class HomeAssistantListener(threading.Thread):
                         pass
 
 
-class RtspSwitcher:
-    def __init__(self, on_bus_message):
-        self._stream_names = [stream["stream_name"] for stream in STREAM_URLS]
-        self._on_bus_message = on_bus_message
-        self._stopping = False
-        self._exit_scheduled = False
-        self._last_output_time = None
-        self._started_at = None
-        self._watchdog_thread = None
-        self._pipeline = None
-        self._bus = None
-        self._bus_handler_id = None
-        self._current_name = None
-        GLib.timeout_add_seconds(1, self._check_stalled_output)
+class PipelineManager(threading.Thread):
+    """Manages the pipeline worker process. Restarts on crash; switches streams on demand."""
 
-    def _build_pipeline(self, stream):
-        encoder = (
-            f"nvh264enc name=enc bitrate={VIDEO_BITRATE_KBPS} "
-            "preset=12 gop-size=30 repeat-sequence-header=true"
-        )
-        parser = "h264parse config-interval=1"
-        caps = "video/x-h264,profile=high"
-        mux = "flvmux"
+    def __init__(self):
+        super().__init__(daemon=True)
+        self._lock = threading.Lock()
+        self._current_stream = None
+        self._process = None
+        self._stopping = threading.Event()
 
-        codec = stream.get("stream_codec", "h264").lower()
-        if codec == "h265":
-            depay = "rtph265depay"
-            parser_in = "h265parse config-interval=1"
-            decoder = "nvh265dec"
-        else:
-            depay = "rtph264depay"
-            parser_in = "h264parse config-interval=1"
-            decoder = "nvh264dec"
-
-        rotation = stream.get("stream_rotation", 0)
-        if rotation == 90:
-            flip = "videoflip method=clockwise ! "
-        elif rotation == 180:
-            flip = "videoflip method=rotate-180 ! "
-        elif rotation == 270:
-            flip = "videoflip method=counterclockwise ! "
-        else:
-            flip = ""
-
-        parts = [
-            f"rtspsrc name=src0 location={_quote_uri(stream['stream_url'])} "
-            f"protocols=tcp tcp-timeout=30000000 latency={RTSP_LATENCY_MS} ! "
-            "queue name=qsrc0 ! "
-            f"{depay} name=depay0 ! {parser_in} name=parse0 ! "
-            "queue name=preq0 ! "
-            f"{decoder} name=dec0 ! "
-            f"{flip}videoconvert ! videoscale ! videorate ! "
-            f"video/x-raw,width={OUTPUT_WIDTH},height={OUTPUT_HEIGHT},"
-            f"framerate={OUTPUT_FRAMERATE}/1 ! "
-            "queue name=postq0 ! "
-            f"{encoder} ! "
-            f"{caps} ! {parser} ! {mux} streamable=true name=mux ! "
-            f"rtmpsink location={RTMP_URL}",
-            "audiotestsrc is-live=true wave=silence ! "
-            "audio/x-raw,channels=2,rate=44100 ! "
-            "audioconvert ! audioresample ! "
-            "voaacenc bitrate=128000 ! aacparse ! mux.",
-        ]
-        return " ".join(parts)
-
-    def _on_output_probe(self, _pad, _info):
-        self._last_output_time = time.monotonic()
-        return Gst.PadProbeReturn.OK
-
-    def _check_stalled_output(self):
-        if self._stopping:
-            return False
-        if not self._pipeline:
-            return True
-        now = time.monotonic()
-        if self._last_output_time is None:
-            if self._started_at and now - self._started_at >= STARTUP_OUTPUT_TIMEOUT_SEC:
-                self.schedule_exit(
-                    f"no output buffers for {STARTUP_OUTPUT_TIMEOUT_SEC}s after start"
-                )
-        elif now - self._last_output_time >= OUTPUT_STALL_TIMEOUT_SEC:
-            self._last_output_time = now
-            self.schedule_exit(
-                f"no output buffers for {OUTPUT_STALL_TIMEOUT_SEC}s"
-            )
-        return True
-
-    def start_watchdog(self):
-        if self._watchdog_thread:
+    def switch_stream(self, name):
+        stream_names = [s["stream_name"] for s in STREAM_URLS]
+        if name not in stream_names:
+            print(f"[manager] Unknown stream: {name!r}")
             return
+        with self._lock:
+            if self._current_stream == name:
+                return
+            self._current_stream = name
+        self._terminate_current()
 
-        def _watchdog_loop():
-            while not self._stopping:
-                now = time.monotonic()
-                last = self._last_output_time
-                if last is None:
-                    if self._started_at and now - self._started_at >= STARTUP_OUTPUT_TIMEOUT_SEC:
-                        print(
-                            f"Watchdog exit: no output buffers for "
-                            f"{STARTUP_OUTPUT_TIMEOUT_SEC}s after start"
-                        )
-                        os._exit(1)
-                elif now - last >= OUTPUT_STALL_TIMEOUT_SEC:
-                    print(
-                        f"Watchdog exit: no output buffers for "
-                        f"{OUTPUT_STALL_TIMEOUT_SEC}s"
-                    )
-                    os._exit(1)
-                time.sleep(1)
-
-        self._watchdog_thread = threading.Thread(
-            target=_watchdog_loop, daemon=True
-        )
-        self._watchdog_thread.start()
-
-    def schedule_exit(self, reason):
-        if self._stopping or self._exit_scheduled:
-            return
-        self._exit_scheduled = True
-        print(f"Scheduling process exit: {reason}")
-
-        def _do_exit():
-            if self._stopping:
-                return False
-            if self._pipeline:
-                self._pipeline.set_state(Gst.State.NULL)
-            os._exit(1)
-            return False
-
-        GLib.timeout_add_seconds(RECONNECT_DELAY_SEC, _do_exit)
-
-    def _set_pipeline(self, pipeline):
-        if self._bus:
-            self._bus.remove_signal_watch()
-            if self._bus_handler_id is not None:
-                self._bus.disconnect(self._bus_handler_id)
-        self._pipeline = pipeline
-        self._bus = None
-        self._bus_handler_id = None
-        if pipeline:
-            self._bus = pipeline.get_bus()
-            self._bus.add_signal_watch()
-            self._bus_handler_id = self._bus.connect("message", self._on_bus_message)
-
-    def start_stream(self, name):
-        if name not in self._stream_names:
-            raise ValueError(f"Unknown stream name: {name}")
-        if self._current_name == name and self._pipeline:
-            return
-        self.stop_current()
-        stream = next(s for s in STREAM_URLS if s["stream_name"] == name)
-        pipeline_str = self._build_pipeline(stream)
-        print(f"GStreamer pipeline: {pipeline_str}")
-        pipeline = Gst.parse_launch(pipeline_str)
-        enc = pipeline.get_by_name("enc")
-        if enc:
-            pad = enc.get_static_pad("src")
-            if pad:
-                pad.add_probe(Gst.PadProbeType.BUFFER, self._on_output_probe)
-        self._exit_scheduled = False
-        self._last_output_time = None
-        self._started_at = time.monotonic()
-        self._set_pipeline(pipeline)
-        pipeline.set_state(Gst.State.PLAYING)
-        self._current_name = name
-
-    def stop_current(self):
-        if self._pipeline:
-            self._pipeline.set_state(Gst.State.NULL)
-        self._set_pipeline(None)
+    def _terminate_current(self):
+        with self._lock:
+            p = self._process
+        if p and p.is_alive():
+            p.terminate()
 
     def stop(self):
-        self._stopping = True
-        self.stop_current()
+        self._stopping.set()
+        self._terminate_current()
+        with self._lock:
+            p = self._process
+        if p:
+            p.join(timeout=5)
+            if p.is_alive():
+                p.kill()
 
-    @property
-    def pipeline(self):
-        return self._pipeline
+    def run(self):
+        while not self._stopping.is_set():
+            with self._lock:
+                stream = self._current_stream
+            if stream is None:
+                self._stopping.wait(0.5)
+                continue
+
+            p = multiprocessing.Process(
+                target=pipeline_worker,
+                args=(stream,),
+                name=f"pipeline-{stream}",
+            )
+            p.start()
+            print(f"[manager] Started pipeline process {p.pid} for {stream!r}")
+            with self._lock:
+                self._process = p
+
+            p.join()
+
+            if self._stopping.is_set():
+                break
+
+            if p.exitcode == -signal.SIGTERM:
+                print(f"[manager] Pipeline {p.pid} terminated for stream switch")
+            else:
+                print(
+                    f"[manager] Pipeline {p.pid} exited (code {p.exitcode}),"
+                    f" restarting in {RECONNECT_DELAY_SEC}s"
+                )
+                self._stopping.wait(RECONNECT_DELAY_SEC)
 
 
 def main():
-    os.environ.setdefault("LIBVA_DRIVER_NAME", "iHD")
-    os.environ.setdefault("LIBVA_DRM_DEVICE", "/dev/dri/renderD128")
-    os.environ.setdefault("GST_VAAPI_DRM_DEVICE", "/dev/dri/renderD128")
-    Gst.init(None)
+    stop_event = threading.Event()
 
-    loop = GLib.MainLoop()
-    last_state = {"value": None}
-    stopping = {"value": False}
+    def _handle_signal(*_):
+        stop_event.set()
 
-    def _on_bus_message(_bus, message):
-        msg_type = message.type
-        if msg_type == Gst.MessageType.ERROR:
-            err, dbg = message.parse_error()
-            print(f"GStreamer error from {message.src.get_name()}: {err} ({dbg})")
-            if message.src == switcher.pipeline:
-                switcher.schedule_exit(f"pipeline error: {err}")
-        elif msg_type == Gst.MessageType.WARNING:
-            warn, dbg = message.parse_warning()
-            print(f"GStreamer warning from {message.src.get_name()}: {warn} ({dbg})")
-        elif msg_type == Gst.MessageType.EOS:
-            print("GStreamer EOS received")
-            if message.src == switcher.pipeline:
-                switcher.schedule_exit("pipeline EOS")
-        elif msg_type == Gst.MessageType.STATE_CHANGED:
-            if message.src == switcher.pipeline:
-                old, new, pending = message.parse_state_changed()
-                print(
-                    f"Pipeline state: {old.value_nick} -> {new.value_nick} "
-                    f"(pending {pending.value_nick})"
-                )
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
 
-    switcher = RtspSwitcher(_on_bus_message)
-
-    def _on_ha_state(state):
-        if state == last_state["value"]:
-            return
-        last_state["value"] = state
-        try:
-            switcher.start_stream(state)
-        except ValueError as exc:
-            print(f"Home Assistant state not found in STREAM_URLS: {exc}")
-
-    def _handle_sigint(*_):
-        if stopping["value"]:
-            return
-        stopping["value"] = True
-        switcher.stop()
-        if ha_listener:
-            ha_listener.stop()
-        loop.quit()
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, _handle_sigint)
-    signal.signal(signal.SIGTERM, _handle_sigint)
-    if hasattr(GLib, "unix_signal_add"):
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, _handle_sigint)
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, _handle_sigint)
+    manager = PipelineManager()
+    manager.start()
 
     web_thread = threading.Thread(target=_start_webserver, daemon=True)
     web_thread.start()
 
-    switcher.start_stream(STREAM_URLS[0]["stream_name"])
-    switcher.start_watchdog()
     ha_listener = None
     if HA_URL and HA_TOKEN:
-        ha_listener = HomeAssistantListener(
-            lambda state: GLib.idle_add(_on_ha_state, state)
-        )
+        ha_listener = HomeAssistantListener(manager.switch_stream)
         ha_listener.start()
 
-    try:
-        loop.run()
-    finally:
-        if ha_listener:
-            ha_listener.stop()
-        switcher.stop()
+    manager.switch_stream(STREAM_URLS[0]["stream_name"])
+
+    stop_event.wait()
+
+    print("[main] Shutting down")
+    manager.stop()
+    if ha_listener:
+        ha_listener.stop()
 
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn")
     main()
