@@ -1,3 +1,9 @@
+## 2.2.0
+- Auto-detect stream resolution, codec, and framerate via ffprobe; these fields are no longer manually entered
+- Add camera: detection runs automatically on save; save is blocked if detection fails (error shown in modal)
+- Edit camera: shows current detected values; ↻ button re-probes the stream
+- Remove orientation/rotation support from camera config and pipeline
+
 ## 2.1.8
 - Show spinner overlay on snapshot when camera switch is in progress
 - Spinner clears automatically when first new frame from the new pipeline arrives

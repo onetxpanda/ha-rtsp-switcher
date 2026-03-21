@@ -27,4 +27,3 @@ streams:
     stream_height: 1080
     stream_framerate: 30
     stream_codec: "h264"
-    stream_rotation: 180

@@ -8,6 +8,7 @@ import threading
 import time
 
 import json
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -581,46 +582,79 @@ function Snapshot({ ts, loading, onFirstLoad }) {
 }
 
 // ── Camera modal ──────────────────────────────────────────────────────────────
-const BLANK_CAM = { stream_name: '', stream_url: '', stream_width: 1920, stream_height: 1080, stream_framerate: 30, stream_codec: 'h264', stream_rotation: 0 };
-
 function CameraModal({ initial, onSave, onClose }) {
-  const [form, setForm] = useState(initial ? { ...initial } : { ...BLANK_CAM });
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  const num = (k, v) => set(k, parseInt(v) || 0);
+  const isEdit = !!initial;
+  const [name, setName] = useState(initial?.stream_name || '');
+  const [url, setUrl] = useState(initial?.stream_url || '');
+  const [detected, setDetected] = useState(
+    initial ? { width: initial.stream_width, height: initial.stream_height, framerate: initial.stream_framerate, codec: initial.stream_codec } : null
+  );
+  const [detecting, setDetecting] = useState(false);
+  const [detectError, setDetectError] = useState(null);
+
+  const probe = async (probeUrl) => {
+    const u = (probeUrl ?? url).trim();
+    if (!u) { setDetectError('Enter an RTSP URL first'); return null; }
+    setDetecting(true);
+    setDetectError(null);
+    setDetected(null);
+    try {
+      const r = await fetch(`${BASE}/api/probe`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: u }) });
+      const d = await r.json();
+      if (d.error) { setDetectError(d.error); setDetecting(false); return null; }
+      setDetected(d);
+      setDetecting(false);
+      return d;
+    } catch { setDetectError('Could not reach server'); setDetecting(false); return null; }
+  };
+
+  const handleSave = async () => {
+    if (!name.trim() || !url.trim()) return;
+    let det = detected;
+    if (!det) {
+      det = await probe(url);
+      if (!det) return;
+    }
+    onSave({ stream_name: name.trim(), stream_url: url.trim(), stream_width: det.width, stream_height: det.height, stream_framerate: det.framerate, stream_codec: det.codec });
+  };
+
+  const codecLabel = detected ? (detected.codec === 'h265' ? 'H.265' : 'H.264') : null;
+
   return (
     <div className="modal-bg" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
-        <div className="modal-title">{initial ? 'Edit Camera' : 'Add Camera'}</div>
+        <div className="modal-title">{isEdit ? 'Edit Camera' : 'Add Camera'}</div>
         <div className="form-grid">
           <div className="field field-full">
             <label>Name</label>
-            <input value={form.stream_name} onChange={e => set('stream_name', e.target.value)} placeholder="Inside Box" />
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="Inside Box" />
           </div>
           <div className="field field-full">
             <label>RTSP URL</label>
-            <input value={form.stream_url} onChange={e => set('stream_url', e.target.value)} placeholder="rtsp://192.168.1.x:8554/stream" />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input value={url} onChange={e => { setUrl(e.target.value); setDetected(null); setDetectError(null); }} placeholder="rtsp://192.168.1.x:8554/stream" style={{ flex: 1 }} />
+              {isEdit && (
+                <button className="btn btn-ghost" onClick={() => probe(url)} disabled={detecting} title="Re-detect stream info" style={{ flexShrink: 0 }}>
+                  {detecting ? '\u2026' : '\u21bb'}
+                </button>
+              )}
+            </div>
           </div>
-          <div className="field"><label>Width</label><input type="number" value={form.stream_width} onChange={e => num('stream_width', e.target.value)} /></div>
-          <div className="field"><label>Height</label><input type="number" value={form.stream_height} onChange={e => num('stream_height', e.target.value)} /></div>
-          <div className="field"><label>Framerate</label><input type="number" value={form.stream_framerate} onChange={e => num('stream_framerate', e.target.value)} /></div>
-          <div className="field">
-            <label>Codec</label>
-            <select value={form.stream_codec} onChange={e => set('stream_codec', e.target.value)}>
-              <option value="h264">H.264</option>
-              <option value="h265">H.265</option>
-            </select>
-          </div>
-          <div className="field">
-            <label>Rotation</label>
-            <select value={form.stream_rotation || 0} onChange={e => num('stream_rotation', e.target.value)}>
-              <option value={0}>0\u00b0</option><option value={90}>90\u00b0</option>
-              <option value={180}>180\u00b0</option><option value={270}>270\u00b0</option>
-            </select>
-          </div>
+        </div>
+        <div style={{ marginTop: 14, minHeight: 32, display: 'flex', alignItems: 'center' }}>
+          {detecting && <span style={{ fontSize: 12, color: 'var(--muted)' }}>Detecting stream\u2026</span>}
+          {!detecting && detected && (
+            <span style={{ fontSize: 12, color: 'var(--success)' }}>
+              {detected.width}\u00d7{detected.height} \u00b7 {codecLabel} \u00b7 {detected.framerate}fps
+            </span>
+          )}
+          {!detecting && detectError && <span style={{ fontSize: 12, color: 'var(--danger)' }}>{detectError}</span>}
+          {!detecting && !detected && !detectError && isEdit && <span style={{ fontSize: 12, color: 'var(--muted)' }}>Press \u21bb to re-detect</span>}
+          {!detecting && !detected && !detectError && !isEdit && <span style={{ fontSize: 12, color: 'var(--muted)' }}>Stream will be detected on save</span>}
         </div>
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={() => onSave(form)}>Save</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={detecting}>Save</button>
         </div>
       </div>
     </div>
@@ -1093,6 +1127,47 @@ def _api_switch():
     return jsonify({"ok": True})
 
 
+@_flask_app.route("/api/probe", methods=["POST"])
+def _api_probe():
+    url = ((request.get_json(force=True) or {}).get("url", "")).strip()
+    if not url:
+        return jsonify({"error": "url required"}), 400
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_streams", "-select_streams", "v:0",
+             "-rtsp_transport", "tcp", url],
+            capture_output=True, text=True, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Stream did not respond within 15 seconds"}), 408
+    except FileNotFoundError:
+        return jsonify({"error": "ffprobe not available on server"}), 500
+    if not result.stdout:
+        return jsonify({"error": "Could not connect to stream"}), 400
+    try:
+        streams = json.loads(result.stdout).get("streams", [])
+    except json.JSONDecodeError:
+        return jsonify({"error": "Could not parse stream info"}), 500
+    if not streams:
+        return jsonify({"error": "No video stream found in RTSP source"}), 400
+    s = streams[0]
+    codec = s.get("codec_name", "h264").lower()
+    if codec == "hevc":
+        codec = "h265"
+    elif codec not in ("h264", "h265"):
+        codec = "h264"
+    width = int(s.get("width", 1920))
+    height = int(s.get("height", 1080))
+    fr_str = s.get("r_frame_rate") or s.get("avg_frame_rate", "30/1")
+    try:
+        num, den = fr_str.split("/")
+        framerate = round(int(num) / max(int(den), 1))
+    except Exception:
+        framerate = 30
+    return jsonify({"width": width, "height": height, "framerate": framerate, "codec": codec})
+
+
 @_flask_app.route("/api/status")
 def _api_status():
     m = _manager_ref
@@ -1231,13 +1306,6 @@ def _build_pipeline_string(stream: dict, hwaccel: str, cfg: dict) -> str:
             ("rtph264depay", "h264parse config-interval=1", "vah264dec")
         )
 
-    rotation = stream.get("stream_rotation", 0)
-    flip = {
-        90:  "videoflip method=clockwise ! ",
-        180: "videoflip method=rotate-180 ! ",
-        270: "videoflip method=counterclockwise ! ",
-    }.get(rotation, "")
-
     w, h, fr = cfg["output_width"], cfg["output_height"], cfg["output_framerate"]
 
     parts = [
@@ -1247,7 +1315,7 @@ def _build_pipeline_string(stream: dict, hwaccel: str, cfg: dict) -> str:
         f"{depay} name=depay0 ! {parser_in} name=parse0 ! "
         "queue name=preq0 ! "
         f"{decoder} name=dec0 ! "
-        f"videoconvert ! {flip}tee name=t ! "
+        "videoconvert ! tee name=t ! "
         f"videoscale ! videorate ! "
         f"video/x-raw,width={w},height={h},framerate={fr}/1 ! "
         "queue name=postq0 ! "
