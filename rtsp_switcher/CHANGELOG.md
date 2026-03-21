@@ -1,3 +1,6 @@
+## 2.2.3
+- Increase all text sizes by 1px
+
 ## 2.2.2
 - Rename addon to "Youtube Live Manager"
 - Use YouTube logo (mdi:youtube) in HA sidebar

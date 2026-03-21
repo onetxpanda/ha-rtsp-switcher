@@ -394,10 +394,10 @@ _WEBUI_HTML = """<!DOCTYPE html>
   --text: #dde1f0; --muted: #6b6f8a; --accent: #5b8cf8; --danger: #e05555; --success: #3ecf8e;
 }
 html, body { height: 100%; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; background: var(--bg); color: var(--text); overflow: hidden; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 15px; background: var(--bg); color: var(--text); overflow: hidden; }
 #root { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .tabbar { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
-.tab { padding: 12px 20px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .12s; display: flex; align-items: center; }
+.tab { padding: 13px 20px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .12s; display: flex; align-items: center; }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .tab svg { display: block; }
@@ -406,18 +406,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; f
 .yt-strip.s-live    { background: rgba(62,207,142,.22); border-color: rgba(62,207,142,.55); }
 .yt-strip.s-warn    { background: rgba(245,166,35,.22); border-color: rgba(245,166,35,.55); }
 .yt-strip.s-error   { background: rgba(224,85,85,.22);  border-color: rgba(224,85,85,.55); }
-.yt-strip-time { font-size: 11px; color: var(--muted); }
-.yt-health-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: #f5a623; }
-.yt-health-err  { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--danger); }
+.yt-strip-time { font-size: 12px; color: var(--muted); }
+.yt-health-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: #f5a623; }
+.yt-health-err  { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--danger); }
 .issue-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-.issue-row { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 6px; font-size: 12px; }
+.issue-row { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 6px; font-size: 13px; }
 .issue-row.warning { background: rgba(245,166,35,.08); border: 1px solid rgba(245,166,35,.25); color: #f5a623; }
 .issue-row.error   { background: rgba(224,85,85,.08);  border: 1px solid rgba(224,85,85,.25);  color: var(--danger); }
-.issue-reason { color: var(--text); font-size: 12px; }
+.issue-reason { color: var(--text); font-size: 13px; }
 .content { flex: 1; min-height: 0; overflow-y: auto; }
 .snapshot-outer { width: 100%; aspect-ratio: 16/9; background: #000; position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .snapshot-outer img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.snapshot-placeholder { color: var(--muted); font-size: 13px; position: absolute; }
+.snapshot-placeholder { color: var(--muted); font-size: 14px; position: absolute; }
 .snapshot-loading { position: absolute; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .snapshot-spinner { width: 32px; height: 32px; border: 3px solid rgba(255,255,255,.15); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
@@ -426,42 +426,42 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; f
 .camera-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; transition: background .12s, border-color .12s; user-select: none; }
 .camera-row:hover { background: var(--surface2); }
 .camera-row.active { background: rgba(62,207,142,.18); border-color: rgba(62,207,142,.5); }
-.camera-name { font-size: 13px; font-weight: 500; color: var(--text); flex: 1; }
-.live-dot { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--success); white-space: nowrap; }
+.camera-name { font-size: 14px; font-weight: 500; color: var(--text); flex: 1; }
+.live-dot { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--success); white-space: nowrap; }
 .live-dot::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: block; }
 .cam-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .settings-content { padding: 20px 16px; }
-h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 12px; }
+h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 12px; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 14px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field-full { grid-column: 1 / -1; }
-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-input, select { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; color: var(--text); font-size: 13px; outline: none; width: 100%; transition: border-color .12s; }
+label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+input, select { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; color: var(--text); font-size: 14px; outline: none; width: 100%; transition: border-color .12s; }
 input:focus, select:focus { border-color: var(--accent); }
 input[type="password"] { font-family: monospace; }
-.btn { display: inline-flex; align-items: center; gap: 5px; padding: 7px 13px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; border: none; outline: none; transition: filter .12s; white-space: nowrap; }
+.btn { display: inline-flex; align-items: center; gap: 5px; padding: 7px 13px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; outline: none; transition: filter .12s; white-space: nowrap; }
 .btn:hover { filter: brightness(1.12); }
 .btn:active { filter: brightness(.9); }
 .btn-primary { background: var(--accent); color: #fff; }
 .btn-danger { background: transparent; color: var(--danger); border: 1px solid rgba(224,85,85,.35); }
 .btn-danger:hover { background: rgba(224,85,85,.1); filter: none; }
 .btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
-.btn-add { width: 100%; padding: 10px; background: transparent; border: 1px dashed var(--border); color: var(--muted); border-radius: 8px; font-size: 13px; cursor: pointer; transition: border-color .12s, color .12s; }
+.btn-add { width: 100%; padding: 10px; background: transparent; border: 1px dashed var(--border); color: var(--muted); border-radius: 8px; font-size: 14px; cursor: pointer; transition: border-color .12s, color .12s; }
 .btn-add:hover { border-color: var(--accent); color: var(--accent); }
 .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 22px; width: 480px; max-width: 95vw; }
-.modal-title { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 18px; }
+.modal-title { font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 18px; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-.toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 200; border: 1px solid; }
+.toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; border-radius: 8px; font-size: 14px; font-weight: 500; z-index: 200; border: 1px solid; }
 .toast-ok { background: rgba(62,207,142,.1); border-color: rgba(62,207,142,.3); color: var(--success); }
 .toast-err { background: rgba(224,85,85,.1); border-color: rgba(224,85,85,.3); color: var(--danger); }
-.yt-status-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 20px; }
+.yt-status-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 20px; }
 .yt-status-badge.live { background: rgba(62,207,142,.12); color: var(--success); border: 1px solid rgba(62,207,142,.3); }
 .yt-status-badge.idle { background: rgba(107,111,138,.12); color: var(--muted); border: 1px solid var(--border); }
 .yt-status-badge.live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: block; }
-.yt-auth-code { font-family: monospace; font-size: 22px; font-weight: 700; letter-spacing: .12em; color: #fff; padding: 10px 0 4px; }
-.yt-auth-url { font-size: 12px; color: var(--muted); word-break: break-all; }
+.yt-auth-code { font-family: monospace; font-size: 23px; font-weight: 700; letter-spacing: .12em; color: #fff; padding: 10px 0 4px; }
+.yt-auth-url { font-size: 13px; color: var(--muted); word-break: break-all; }
 .toggle-row { display: flex; align-items: center; justify-content: space-between; }
 .toggle { position: relative; width: 38px; height: 22px; flex-shrink: 0; }
 .toggle input { opacity: 0; width: 0; height: 0; }
@@ -642,15 +642,15 @@ function CameraModal({ initial, onSave, onClose }) {
           </div>
         </div>
         <div style={{ marginTop: 14, minHeight: 32, display: 'flex', alignItems: 'center' }}>
-          {detecting && <span style={{ fontSize: 12, color: 'var(--muted)' }}>Detecting stream\u2026</span>}
+          {detecting && <span style={{ fontSize: 13, color: 'var(--muted)' }}>Detecting stream\u2026</span>}
           {!detecting && detected && (
-            <span style={{ fontSize: 12, color: 'var(--success)' }}>
+            <span style={{ fontSize: 13, color: 'var(--success)' }}>
               {detected.width}\u00d7{detected.height} \u00b7 {codecLabel} \u00b7 {detected.framerate}fps
             </span>
           )}
-          {!detecting && detectError && <span style={{ fontSize: 12, color: 'var(--danger)' }}>{detectError}</span>}
-          {!detecting && !detected && !detectError && isEdit && <span style={{ fontSize: 12, color: 'var(--muted)' }}>Press \u21bb to re-detect</span>}
-          {!detecting && !detected && !detectError && !isEdit && <span style={{ fontSize: 12, color: 'var(--muted)' }}>Stream will be detected on save</span>}
+          {!detecting && detectError && <span style={{ fontSize: 13, color: 'var(--danger)' }}>{detectError}</span>}
+          {!detecting && !detected && !detectError && isEdit && <span style={{ fontSize: 13, color: 'var(--muted)' }}>Press \u21bb to re-detect</span>}
+          {!detecting && !detected && !detectError && !isEdit && <span style={{ fontSize: 13, color: 'var(--muted)' }}>Stream will be detected on save</span>}
         </div>
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
@@ -922,10 +922,10 @@ function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
             <h2 style={{ marginBottom: 0 }}>Broadcast Status</h2>
             <span className={`yt-status-badge ${live ? 'live' : 'idle'}`}>{live ? 'Live' : 'Idle'}</span>
           </div>
-          {yt?.title && <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 4 }}>{yt.title}</div>}
-          {live && yt?.started_at && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Started {fmtTime(yt.started_at)} &middot; {fmtElapsed(yt.started_at)}</div>}
-          {!live && yt?.ended_at && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Ended {fmtTime(yt.ended_at)}</div>}
-          {!configured && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>Not authorised — complete OAuth setup below.</div>}
+          {yt?.title && <div style={{ fontSize: 14, color: 'var(--text)', marginBottom: 4 }}>{yt.title}</div>}
+          {live && yt?.started_at && <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 4 }}>Started {fmtTime(yt.started_at)} &middot; {fmtElapsed(yt.started_at)}</div>}
+          {!live && yt?.ended_at && <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 4 }}>Ended {fmtTime(yt.ended_at)}</div>}
+          {!configured && <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12 }}>Not authorised — complete OAuth setup below.</div>}
           {live && yt?.stream_issues?.length > 0 && (
             <div className="issue-list">
               {yt.stream_issues.map((issue, i) => (
@@ -942,9 +942,9 @@ function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
             </button>
             <button className="btn btn-ghost" onClick={doRefresh}>Refresh</button>
           </div>
-          {yt?.last_error && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8, wordBreak: 'break-word' }}>{yt.last_error}</div>}
+          {yt?.last_error && <div style={{ fontSize: 13, color: 'var(--danger)', marginTop: 8, wordBreak: 'break-word' }}>{yt.last_error}</div>}
           <div className="toggle-row" style={{ marginTop: 14 }}>
-            <span style={{ fontSize: 13, color: 'var(--text)' }}>Auto-restart when broadcast stops</span>
+            <span style={{ fontSize: 14, color: 'var(--text)' }}>Auto-restart when broadcast stops</span>
             <label className="toggle">
               <input type="checkbox" checked={yt?.auto_restart || false} onChange={toggleAutoRestart} disabled={!configured} />
               <span className="toggle-slider" />
@@ -987,17 +987,17 @@ function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
           </div>
           {authFlow && (
             <div style={{ marginTop: 16, padding: '14px 16px', background: 'var(--surface2)', borderRadius: 8, border: '1px solid var(--border)' }}>
-              <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Open this URL on any device and enter the code:</div>
+              <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 4 }}>Open this URL on any device and enter the code:</div>
               <div className="yt-auth-url">{authFlow.verification_url}</div>
               <div className="yt-auth-code">{authFlow.user_code}</div>
-              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Waiting for approval\u2026</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>Waiting for approval\u2026</div>
             </div>
           )}
         </div>
 
         <div className="card">
           <h2>Setup Instructions</h2>
-          <ol style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.7, paddingLeft: 16 }}>
+          <ol style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.7, paddingLeft: 16 }}>
             <li>Go to Google Cloud Console and create a project</li>
             <li>Enable <strong style={{ color: 'var(--text)' }}>YouTube Data API v3</strong></li>
             <li>Create OAuth 2.0 credentials &mdash; type: <strong style={{ color: 'var(--text)' }}>TV and Limited Input</strong></li>
