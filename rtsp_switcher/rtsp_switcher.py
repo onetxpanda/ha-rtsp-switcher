@@ -13,7 +13,9 @@ from homeassistant_api import WebsocketClient
 
 
 def _load_config():
-    config_path = pathlib.Path(__file__).parent / "settings.yaml"
+    ha_path = pathlib.Path("/config/rtsp_switcher/settings.yaml")
+    local_path = pathlib.Path(__file__).parent / "settings.yaml"
+    config_path = ha_path if ha_path.exists() else local_path
     with open(config_path) as f:
         return yaml.safe_load(f)
 

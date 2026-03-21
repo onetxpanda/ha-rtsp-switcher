@@ -32,6 +32,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip3 install --break-system-packages -r /app/requirements.txt
 
 COPY rtsp_switcher.py /app/rtsp_switcher.py
+COPY settings.yaml.example /app/settings.yaml.example
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
 
