@@ -508,9 +508,12 @@ function fmtElapsed(iso) {
   if (!iso) return null;
   const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
   if (diff < 60) return `${diff}s`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  const s = diff % 60;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ${s}s`;
   const h = Math.floor(diff / 3600), m = Math.floor((diff % 3600) / 60);
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  if (diff < 86400) return `${h}h ${m}m ${s}s`;
+  const d = Math.floor(diff / 86400), rh = Math.floor((diff % 86400) / 3600), rm = Math.floor((diff % 3600) / 60);
+  return `${d}d ${rh}h ${rm}m ${s}s`;
 }
 
 // ── YouTube status strip ──────────────────────────────────────────────────────
@@ -532,7 +535,7 @@ function HealthWarn({ health, issues }) {
 
 function YtStrip({ yt }) {
   const [, tick] = useState(0);
-  useEffect(() => { const id = setInterval(() => tick(n => n + 1), 30000); return () => clearInterval(id); }, []);
+  useEffect(() => { const id = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(id); }, []);
   if (!yt?.configured) return <div className="yt-strip s-idle" />;
   const live = yt.live;
   const health = yt.stream_health;
@@ -543,7 +546,7 @@ function YtStrip({ yt }) {
     <div className={`yt-strip ${stripCls}`}>
       <span className={`yt-status-badge ${live ? 'live' : 'idle'}`}>{live ? 'Live' : 'Idle'}</span>
       {live && yt.started_at && (
-        <span className="yt-strip-time">{fmtElapsed(yt.started_at)}</span>
+        <span className="yt-strip-time">Stream started {fmtElapsed(yt.started_at)} ago</span>
       )}
       {live && <HealthWarn health={yt.stream_health} issues={yt.stream_issues} />}
     </div>

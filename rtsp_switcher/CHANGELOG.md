@@ -1,3 +1,7 @@
+## 2.2.6
+- Status strip: show "Stream started Xd Xh Xm Xs ago" with seconds, updating every second
+- Fix elapsed time to correctly display days, hours, minutes, and seconds
+
 ## 2.2.5
 - Status strip: show elapsed time only (no start date), remove broadcast title
 - Status strip: text outside the badge is now white
