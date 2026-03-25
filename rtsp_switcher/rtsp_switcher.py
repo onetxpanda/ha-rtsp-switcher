@@ -2,6 +2,7 @@
 import multiprocessing
 import os
 import pathlib
+import queue as _queue_mod
 import signal
 import sys
 import threading
@@ -15,6 +16,7 @@ import urllib.request
 
 import yaml
 from flask import Flask, Response, abort, jsonify, request
+from flask_sock import Sock as _Sock
 from homeassistant_api import WebsocketClient
 
 
@@ -372,6 +374,9 @@ class YouTubeManager(threading.Thread):
 _snapshot_lock = threading.Lock()
 _latest_snapshot: bytes | None = None
 
+_video_clients_lock = threading.Lock()
+_video_clients: list = []  # one queue.Queue per connected WebSocket client
+
 
 # ---------------------------------------------------------------------------
 # Web UI
@@ -417,6 +422,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; f
 .content { flex: 1; min-height: 0; overflow-y: auto; }
 .snapshot-outer { width: 100%; aspect-ratio: 16/9; background: #000; position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .snapshot-outer img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.snapshot-outer canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
 .snapshot-placeholder { color: var(--muted); font-size: 14px; position: absolute; }
 .snapshot-loading { position: absolute; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -578,6 +584,116 @@ function Snapshot({ ts, loading, onFirstLoad }) {
   );
 }
 
+// ── VideoPreview (WebCodecs + WebSocket, falls back to Snapshot) ──────────────
+function parseSpsCodecString(bytes) {
+  for (let i = 0; i < bytes.length - 8; i++) {
+    if (bytes[i]===0 && bytes[i+1]===0 && bytes[i+2]===0 && bytes[i+3]===1) {
+      if ((bytes[i+4] & 0x1f) === 7) { // NAL type 7 = SPS
+        const p = bytes[i+5].toString(16).padStart(2,'0');
+        const c = bytes[i+6].toString(16).padStart(2,'0');
+        const l = bytes[i+7].toString(16).padStart(2,'0');
+        return `avc1.${p}${c}${l}`;
+      }
+    }
+  }
+  return 'avc1.42E01E'; // fallback
+}
+
+function VideoPreview({ ts, loading, onFirstLoad, pipelineGeneration }) {
+  const canvasRef = React.useRef(null);
+  const [mode, setMode] = React.useState('connecting'); // 'connecting'|'video'|'snapshot'
+  const modeRef = React.useRef('connecting');
+  const setModeSync = (m) => { modeRef.current = m; setMode(m); };
+
+  const supportsWebCodecs = typeof VideoDecoder !== 'undefined';
+
+  useEffect(() => {
+    if (!supportsWebCodecs) { setModeSync('snapshot'); return; }
+
+    const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProto}//${location.host}${BASE}/ws/video`;
+
+    let closed = false;
+    let decoder = null;
+    let needsReset = true;
+    let lastGen = pipelineGeneration;
+
+    function makeDecoder(codecStr) {
+      if (decoder && decoder.state !== 'closed') { try { decoder.close(); } catch(_) {} }
+      decoder = new VideoDecoder({
+        output: (frame) => {
+          const canvas = canvasRef.current;
+          if (canvas) canvas.getContext('2d').drawImage(frame, 0, 0, canvas.width, canvas.height);
+          frame.close();
+          if (modeRef.current !== 'video') setModeSync('video');
+          if (loading) onFirstLoad();
+        },
+        error: () => { needsReset = true; },
+      });
+      decoder.configure({ codec: codecStr, optimizeForLatency: true });
+    }
+
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => { needsReset = true; };
+
+    ws.onmessage = (evt) => {
+      if (!(evt.data instanceof ArrayBuffer) || evt.data.byteLength < 9) return;
+      const view = new DataView(evt.data);
+      const isKeyframe = view.getUint8(0) === 1;
+      const tsBigInt = view.getBigUint64(1, false);
+      const timestamp = Number(tsBigInt);
+      const h264 = new Uint8Array(evt.data, 9);
+
+      // Track pipeline generation changes
+      const curGen = pipelineGenRef.current;
+      if (curGen !== null && lastGen !== null && curGen !== lastGen) needsReset = true;
+      lastGen = curGen;
+
+      if (needsReset) {
+        if (!isKeyframe) return; // wait for IDR
+        needsReset = false;
+        makeDecoder(parseSpsCodecString(h264));
+        return; // decoder just configured, decode on next frame
+      }
+      if (!decoder || decoder.state !== 'configured') return;
+      try {
+        decoder.decode(new EncodedVideoChunk({ type: isKeyframe ? 'key' : 'delta', timestamp, data: h264 }));
+      } catch(_) { needsReset = true; }
+    };
+
+    ws.onerror = () => { if (!closed) setModeSync('snapshot'); };
+    ws.onclose = () => { if (!closed) setModeSync('snapshot'); };
+
+    return () => {
+      closed = true;
+      ws.close();
+      if (decoder && decoder.state !== 'closed') { try { decoder.close(); } catch(_) {} }
+    };
+  }, []);
+
+  // Track pipelineGeneration via ref so the WS message handler sees current value
+  const pipelineGenRef = React.useRef(pipelineGeneration);
+  useEffect(() => { pipelineGenRef.current = pipelineGeneration; }, [pipelineGeneration]);
+
+  if (!supportsWebCodecs || mode === 'snapshot') {
+    return <Snapshot ts={ts} loading={loading} onFirstLoad={onFirstLoad} />;
+  }
+  return (
+    <div className="snapshot-outer">
+      <canvas ref={canvasRef} width={1920} height={1080}
+        style={{ display: mode === 'video' ? 'block' : 'none' }} />
+      {mode === 'connecting' && !loading && (
+        <span className="snapshot-placeholder">Connecting\u2026</span>
+      )}
+      {(mode === 'connecting' || loading) && (
+        <div className="snapshot-loading"><div className="snapshot-spinner" /></div>
+      )}
+    </div>
+  );
+}
+
 // ── Camera modal ──────────────────────────────────────────────────────────────
 function CameraModal({ initial, onSave, onClose }) {
   const isEdit = !!initial;
@@ -714,7 +830,10 @@ function CameraTab({ config, onConfigChange, showToast }) {
 
   return (
     <div className="content">
-      <Snapshot ts={ts} loading={snapshotLoading} onFirstLoad={() => setSnapshotLoading(false)} />
+      {config?.video_preview
+        ? <VideoPreview ts={ts} loading={snapshotLoading} onFirstLoad={() => setSnapshotLoading(false)} pipelineGeneration={status?.pipeline_generation ?? null} />
+        : <Snapshot ts={ts} loading={snapshotLoading} onFirstLoad={() => setSnapshotLoading(false)} />
+      }
       <div className="camera-section">
         <div className="camera-list">
           {streams.map((s, i) => {
@@ -808,6 +927,13 @@ function SettingsTab({ config, onConfigChange, showToast }) {
             <div className="field"><label>Reconnect Delay (s)</label><input type="number" value={form.reconnect_delay_sec || ''} onChange={e => num('reconnect_delay_sec', e.target.value)} /></div>
             <div className="field"><label>Output Stall Timeout (s)</label><input type="number" value={form.output_stall_timeout_sec || ''} onChange={e => num('output_stall_timeout_sec', e.target.value)} /></div>
             <div className="field"><label>Startup Output Timeout (s)</label><input type="number" value={form.startup_output_timeout_sec || ''} onChange={e => num('startup_output_timeout_sec', e.target.value)} /></div>
+          </div>
+          <div className="toggle-row" style={{ marginTop: 14 }}>
+            <span style={{ fontSize: 14, color: 'var(--text)' }}>Live video preview — experimental (restart addon after changing)</span>
+            <label className="toggle">
+              <input type="checkbox" checked={!!form.video_preview} onChange={e => set('video_preview', e.target.checked)} />
+              <span className="toggle-slider" />
+            </label>
           </div>
         </div>
         <button className="btn btn-primary" onClick={handleSave}>Save Settings</button>
@@ -1061,6 +1187,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 </html>"""
 
 _flask_app = Flask(__name__)
+_sock = _Sock(_flask_app)
 _manager_ref = None
 _ha_listener_ref = None
 _youtube_manager_ref: YouTubeManager | None = None
@@ -1261,10 +1388,52 @@ def _api_youtube_auto_restart():
     return jsonify({"ok": True})
 
 
+@_sock.route('/ws/video')
+def _ws_video(ws):
+    client_q = _queue_mod.Queue(maxsize=30)
+    with _video_clients_lock:
+        _video_clients.append(client_q)
+    try:
+        while True:
+            try:
+                msg = client_q.get(timeout=10)
+                ws.send(msg)
+            except _queue_mod.Empty:
+                pass  # no frame yet, keep connection open
+    except Exception:
+        pass
+    finally:
+        with _video_clients_lock:
+            try:
+                _video_clients.remove(client_q)
+            except ValueError:
+                pass
+
+
+def _drain_video_frames(video_queue):
+    """Daemon thread: reads H.264 frames from video_queue, broadcasts to all WS clients."""
+    while True:
+        try:
+            msg = video_queue.get(timeout=5)
+        except Exception:
+            continue
+        with _video_clients_lock:
+            clients = list(_video_clients)
+        for client_q in clients:
+            try:
+                client_q.put_nowait(msg)
+            except _queue_mod.Full:
+                try:
+                    client_q.get_nowait()   # drop oldest
+                    client_q.put_nowait(msg)
+                except Exception:
+                    pass
+
+
 def _start_webserver():
     import logging
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
-    _flask_app.run(host="0.0.0.0", port=8099, debug=False, use_reloader=False)
+    _flask_app.run(host="0.0.0.0", port=8099, debug=False, use_reloader=False, threaded=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1305,11 +1474,15 @@ def _build_pipeline_string(stream: dict, hwaccel: str, cfg: dict) -> str:
 
     w, h, fr = cfg["output_width"], cfg["output_height"], cfg["output_framerate"]
 
+    # Add preview tee for H.264 streams when video_preview is enabled
+    preview_enabled = cfg.get("video_preview", False) and codec == "h264"
+    parse0_suffix = " ! tee name=t_h264" if preview_enabled else ""
+
     parts = [
         f"rtspsrc name=src0 location={_quote_uri(stream['stream_url'])} "
         f"protocols=tcp tcp-timeout=30000000 latency={cfg['rtsp_latency_ms']} ! "
         "queue name=qsrc0 ! "
-        f"{depay} name=depay0 ! {parser_in} name=parse0 ! "
+        f"{depay} name=depay0 ! {parser_in} name=parse0{parse0_suffix} ! "
         "queue name=preq0 ! "
         f"{decoder} name=dec0 ! "
         "videoconvert ! tee name=t ! "
@@ -1330,6 +1503,13 @@ def _build_pipeline_string(stream: dict, hwaccel: str, cfg: dict) -> str:
         "audioconvert ! audioresample ! "
         "voaacenc bitrate=128000 ! aacparse ! mux.",
     ]
+    if preview_enabled:
+        parts.append(
+            "t_h264. ! queue name=prevq max-size-buffers=5 leaky=downstream ! "
+            "h264parse config-interval=-1 ! "
+            "video/x-h264,stream-format=byte-stream,alignment=au ! "
+            "appsink name=prevsink emit-signals=false max-buffers=5 drop=true"
+        )
     return " ".join(parts)
 
 
@@ -1364,7 +1544,40 @@ def _snapshot_loop(pipeline, snapshot_queue):
                 pass
 
 
-def pipeline_worker(stream: dict, cfg: dict, snapshot_queue):
+def _video_loop(pipeline, video_queue):
+    """Runs as a daemon thread inside the worker process. Pulls H.264 frames from prevsink."""
+    import gi
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst
+
+    prevsink = pipeline.get_by_name("prevsink")
+    if prevsink is None:
+        return  # preview not in this pipeline build
+
+    while True:
+        sample = prevsink.emit("try-pull-sample", Gst.SECOND // 2)
+        if sample is None:
+            continue
+        buf = sample.get_buffer()
+        is_keyframe = not buf.has_flags(Gst.BufferFlags.DELTA_UNIT)
+        pts_ns = buf.pts
+        pts_us = pts_ns // 1000 if pts_ns != Gst.CLOCK_TIME_NONE else 0
+        ok, info = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            continue
+        try:
+            data = bytes(info.data)
+        finally:
+            buf.unmap(info)
+        # Wire format: [1B: 0x01=keyframe/0x00=delta][8B: PTS µs big-endian][N B: Annex-B H.264]
+        msg = (b'\x01' if is_keyframe else b'\x00') + pts_us.to_bytes(8, 'big') + data
+        try:
+            video_queue.put_nowait(msg)
+        except Exception:
+            pass  # drop if queue full
+
+
+def pipeline_worker(stream: dict, cfg: dict, snapshot_queue, video_queue):
     """Runs in a child process. Owns GStreamer entirely."""
     import gi
     gi.require_version("Gst", "1.0")
@@ -1460,6 +1673,7 @@ def pipeline_worker(stream: dict, cfg: dict, snapshot_queue):
     pipeline.set_state(Gst.State.PLAYING)
 
     threading.Thread(target=_snapshot_loop, args=(pipeline, snapshot_queue), daemon=True).start()
+    threading.Thread(target=_video_loop, args=(pipeline, video_queue), daemon=True).start()
 
     try:
         loop.run()
@@ -1568,13 +1782,14 @@ class HomeAssistantListener(threading.Thread):
 # ---------------------------------------------------------------------------
 
 class PipelineManager(threading.Thread):
-    def __init__(self, snapshot_queue):
+    def __init__(self, snapshot_queue, video_queue):
         super().__init__(daemon=True)
         self._lock = threading.Lock()
         self._current_stream = None
         self._process = None
         self._stopping = threading.Event()
         self._snapshot_queue = snapshot_queue
+        self._video_queue = video_queue
         self._pipeline_generation = 0
 
     @property
@@ -1642,16 +1857,21 @@ class PipelineManager(threading.Thread):
                     self._stopping.wait(2)
                 continue
 
-            # Drain stale snapshots before starting new pipeline
+            # Drain stale snapshots and video frames before starting new pipeline
             while True:
                 try:
                     self._snapshot_queue.get_nowait()
                 except Exception:
                     break
+            while True:
+                try:
+                    self._video_queue.get_nowait()
+                except Exception:
+                    break
 
             p = multiprocessing.Process(
                 target=pipeline_worker,
-                args=(stream, cfg, self._snapshot_queue),
+                args=(stream, cfg, self._snapshot_queue, self._video_queue),
                 name=f"pipeline-{stream_name}",
             )
             p.start()
@@ -1685,6 +1905,7 @@ def main():
     _load_config()
 
     snapshot_queue = multiprocessing.Queue(maxsize=2)
+    video_queue = multiprocessing.Queue(maxsize=15)
 
     def _drain_snapshots():
         global _latest_snapshot
@@ -1697,9 +1918,10 @@ def main():
                 pass
 
     threading.Thread(target=_drain_snapshots, daemon=True).start()
+    threading.Thread(target=_drain_video_frames, args=(video_queue,), daemon=True).start()
 
     global _manager_ref
-    manager = PipelineManager(snapshot_queue)
+    manager = PipelineManager(snapshot_queue, video_queue)
     _manager_ref = manager
     manager.start()
 

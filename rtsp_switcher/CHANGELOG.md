@@ -1,3 +1,11 @@
+## 3.0.0
+- Add live H.264 video preview via WebCodecs API (disabled by default — enable in Settings > Advanced, then restart addon)
+- Taps camera H.264 elementary stream directly before the hardware decoder — zero re-encoding overhead
+- WebSocket endpoint /ws/video streams binary H.264 Annex-B frames to browser
+- Browser decodes using VideoDecoder API; codec string auto-detected from camera SPS NAL unit
+- Falls back to JPEG snapshot polling on WebSocket error or if VideoDecoder is unsupported
+- Add flask-sock dependency for WebSocket support
+
 ## 2.2.6
 - Status strip: show "Stream started Xd Xh Xm Xs ago" with seconds, updating every second
 - Fix elapsed time to correctly display days, hours, minutes, and seconds
