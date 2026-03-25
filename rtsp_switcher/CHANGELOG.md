@@ -1,3 +1,6 @@
+## 3.0.2
+- Fix VideoPreview: improve "VideoDecoder not supported" message to distinguish between non-secure context (HTTP) and genuinely unsupported browser
+
 ## 3.0.1
 - Fix VideoPreview: decode IDR frame immediately after decoder init (was skipped, causing P-frame decode errors)
 - Fix VideoPreview: move pipelineGenRef declaration before the useEffect that captures it

@@ -2,7 +2,6 @@
 import multiprocessing
 import os
 import pathlib
-import queue as _queue_mod
 import signal
 import sys
 import threading
@@ -13,6 +12,8 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+
+import queue as _queue_mod
 
 import yaml
 from flask import Flask, Response, abort, jsonify, request
@@ -375,7 +376,7 @@ _snapshot_lock = threading.Lock()
 _latest_snapshot: bytes | None = None
 
 _video_clients_lock = threading.Lock()
-_video_clients: list = []  # one queue.Queue per connected WebSocket client
+_video_clients: list = []
 
 
 # ---------------------------------------------------------------------------
@@ -614,8 +615,12 @@ function VideoPreview({ ts, loading, onFirstLoad, pipelineGeneration }) {
 
   useEffect(() => {
     if (!supportsWebCodecs) {
+      const reason = !window.isSecureContext
+        ? 'WebCodecs requires HTTPS or localhost — current page is not a secure context'
+        : 'VideoDecoder API not available in this browser';
+      console.warn('[VideoPreview]', reason);
       setMode('fallback');
-      setStatusMsg('VideoDecoder not supported in this browser');
+      setStatusMsg(reason);
       return;
     }
 
