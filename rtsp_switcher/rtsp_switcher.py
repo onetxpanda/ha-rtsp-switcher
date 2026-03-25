@@ -601,34 +601,49 @@ function parseSpsCodecString(bytes) {
 
 function VideoPreview({ ts, loading, onFirstLoad, pipelineGeneration }) {
   const canvasRef = React.useRef(null);
-  const [mode, setMode] = React.useState('connecting'); // 'connecting'|'video'|'snapshot'
+  // mode: 'connecting' | 'video' | 'fallback'
+  const [mode, setMode] = React.useState('connecting');
+  const [statusMsg, setStatusMsg] = React.useState('Connecting\u2026');
   const modeRef = React.useRef('connecting');
-  const setModeSync = (m) => { modeRef.current = m; setMode(m); };
+  // pipelineGenRef must be declared before the useEffect that uses it
+  const pipelineGenRef = React.useRef(pipelineGeneration);
+
+  useEffect(() => { pipelineGenRef.current = pipelineGeneration; }, [pipelineGeneration]);
 
   const supportsWebCodecs = typeof VideoDecoder !== 'undefined';
 
   useEffect(() => {
-    if (!supportsWebCodecs) { setModeSync('snapshot'); return; }
+    if (!supportsWebCodecs) {
+      setMode('fallback');
+      setStatusMsg('VideoDecoder not supported in this browser');
+      return;
+    }
 
     const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProto}//${location.host}${BASE}/ws/video`;
+    console.log('[VideoPreview] connecting to', wsUrl);
 
     let closed = false;
     let decoder = null;
     let needsReset = true;
-    let lastGen = pipelineGeneration;
+    let lastGen = pipelineGenRef.current;
+    let localTs = 0; // monotonic fallback timestamp (µs)
 
     function makeDecoder(codecStr) {
       if (decoder && decoder.state !== 'closed') { try { decoder.close(); } catch(_) {} }
+      console.log('[VideoPreview] configuring decoder, codec:', codecStr);
       decoder = new VideoDecoder({
         output: (frame) => {
           const canvas = canvasRef.current;
           if (canvas) canvas.getContext('2d').drawImage(frame, 0, 0, canvas.width, canvas.height);
           frame.close();
-          if (modeRef.current !== 'video') setModeSync('video');
+          if (modeRef.current !== 'video') { modeRef.current = 'video'; setMode('video'); }
           if (loading) onFirstLoad();
         },
-        error: () => { needsReset = true; },
+        error: (e) => {
+          console.warn('[VideoPreview] decoder error:', e);
+          needsReset = true;
+        },
       });
       decoder.configure({ codec: codecStr, optimizeForLatency: true });
     }
@@ -636,35 +651,56 @@ function VideoPreview({ ts, loading, onFirstLoad, pipelineGeneration }) {
     const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
 
-    ws.onopen = () => { needsReset = true; };
+    ws.onopen = () => {
+      console.log('[VideoPreview] WebSocket open');
+      needsReset = true;
+      setStatusMsg('Waiting for keyframe\u2026');
+    };
 
     ws.onmessage = (evt) => {
       if (!(evt.data instanceof ArrayBuffer) || evt.data.byteLength < 9) return;
       const view = new DataView(evt.data);
       const isKeyframe = view.getUint8(0) === 1;
-      const tsBigInt = view.getBigUint64(1, false);
-      const timestamp = Number(tsBigInt);
+      const ptsBigInt = view.getBigUint64(1, false);
+      // Use GStreamer PTS if non-zero, otherwise a local monotonic counter
+      const ptsUs = Number(ptsBigInt);
+      const timestamp = ptsUs > 0 ? ptsUs : localTs;
+      localTs += 33333; // ~30fps fallback increment
       const h264 = new Uint8Array(evt.data, 9);
 
-      // Track pipeline generation changes
+      // Detect pipeline generation change → need decoder reset
       const curGen = pipelineGenRef.current;
-      if (curGen !== null && lastGen !== null && curGen !== lastGen) needsReset = true;
+      if (curGen !== null && lastGen !== null && curGen !== lastGen) {
+        console.log('[VideoPreview] pipeline generation changed, waiting for next keyframe');
+        needsReset = true;
+      }
       lastGen = curGen;
 
       if (needsReset) {
-        if (!isKeyframe) return; // wait for IDR
+        if (!isKeyframe) return; // wait for IDR before decoding anything
         needsReset = false;
-        makeDecoder(parseSpsCodecString(h264));
-        return; // decoder just configured, decode on next frame
+        const codecStr = parseSpsCodecString(h264);
+        makeDecoder(codecStr);
+        // fall through and decode this IDR frame immediately
       }
+
       if (!decoder || decoder.state !== 'configured') return;
       try {
         decoder.decode(new EncodedVideoChunk({ type: isKeyframe ? 'key' : 'delta', timestamp, data: h264 }));
-      } catch(_) { needsReset = true; }
+      } catch(e) {
+        console.warn('[VideoPreview] decode error:', e);
+        needsReset = true;
+      }
     };
 
-    ws.onerror = () => { if (!closed) setModeSync('snapshot'); };
-    ws.onclose = () => { if (!closed) setModeSync('snapshot'); };
+    ws.onerror = (e) => {
+      console.warn('[VideoPreview] WebSocket error', e);
+      if (!closed) { setMode('fallback'); setStatusMsg('WebSocket error \u2014 showing snapshots'); }
+    };
+    ws.onclose = (e) => {
+      console.log('[VideoPreview] WebSocket closed, code:', e.code, e.reason);
+      if (!closed) { setMode('fallback'); setStatusMsg(`WebSocket closed (${e.code}) \u2014 showing snapshots`); }
+    };
 
     return () => {
       closed = true;
@@ -673,23 +709,29 @@ function VideoPreview({ ts, loading, onFirstLoad, pipelineGeneration }) {
     };
   }, []);
 
-  // Track pipelineGeneration via ref so the WS message handler sees current value
-  const pipelineGenRef = React.useRef(pipelineGeneration);
-  useEffect(() => { pipelineGenRef.current = pipelineGeneration; }, [pipelineGeneration]);
-
-  if (!supportsWebCodecs || mode === 'snapshot') {
-    return <Snapshot ts={ts} loading={loading} onFirstLoad={onFirstLoad} />;
+  if (mode === 'fallback') {
+    return (
+      <div>
+        <Snapshot ts={ts} loading={loading} onFirstLoad={onFirstLoad} />
+        <div style={{ padding: '4px 12px', fontSize: 11, color: 'var(--muted)', background: 'var(--surface2)' }}>{statusMsg}</div>
+      </div>
+    );
   }
   return (
-    <div className="snapshot-outer">
-      <canvas ref={canvasRef} width={1920} height={1080}
-        style={{ display: mode === 'video' ? 'block' : 'none' }} />
-      {mode === 'connecting' && !loading && (
-        <span className="snapshot-placeholder">Connecting\u2026</span>
-      )}
-      {(mode === 'connecting' || loading) && (
-        <div className="snapshot-loading"><div className="snapshot-spinner" /></div>
-      )}
+    <div>
+      <div className="snapshot-outer">
+        <canvas ref={canvasRef} width={1920} height={1080}
+          style={{ display: mode === 'video' ? 'block' : 'none' }} />
+        {mode === 'connecting' && !loading && (
+          <span className="snapshot-placeholder">{statusMsg}</span>
+        )}
+        {(mode === 'connecting' || loading) && (
+          <div className="snapshot-loading"><div className="snapshot-spinner" /></div>
+        )}
+      </div>
+      <div style={{ padding: '4px 12px', fontSize: 11, color: mode === 'video' ? 'var(--success)' : 'var(--muted)', background: 'var(--surface2)' }}>
+        {mode === 'video' ? '\u25cf Live video' : statusMsg}
+      </div>
     </div>
   );
 }

@@ -1,3 +1,10 @@
+## 3.0.1
+- Fix VideoPreview: decode IDR frame immediately after decoder init (was skipped, causing P-frame decode errors)
+- Fix VideoPreview: move pipelineGenRef declaration before the useEffect that captures it
+- Fix VideoPreview: use local monotonic timestamp counter when GStreamer PTS is zero
+- Add visible status bar below preview showing live/connecting/error state with reason
+- Add console.log at key WebSocket and decoder lifecycle points for debugging
+
 ## 3.0.0
 - Add live H.264 video preview via WebCodecs API (disabled by default — enable in Settings > Advanced, then restart addon)
 - Taps camera H.264 elementary stream directly before the hardware decoder — zero re-encoding overhead
