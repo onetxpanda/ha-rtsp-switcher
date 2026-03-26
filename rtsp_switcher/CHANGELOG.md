@@ -1,3 +1,7 @@
+## 4.0.1
+- Fix restart broadcast: wait for broadcast to reach `ready` state after binding before calling transition — previously called transition while broadcast was still in `created` state, causing YouTube API "invalid transition" error
+- Fix restart broadcast: `title` variable was undefined, causing a NameError after a successful transition that masked the success as an error
+
 ## 4.0.0
 - Add embed mode: append `?embed` to the ingress URL to get a stripped view (video feed, YouTube status bar, camera switching only — no tabs, no edit/delete/add)
 - Embed mode reads HA theme CSS variables from the parent window when loaded via ingress (same-origin), so the card matches the active HA theme automatically

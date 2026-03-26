@@ -306,6 +306,17 @@ class YouTubeManager(threading.Thread):
             else:
                 return False, "Stream not active after 30s — is RTMP pushing?"
 
+            # Wait up to 15s for the broadcast to reach ready state before transitioning
+            for _ in range(15):
+                bc_data = self._api_get("liveBroadcasts", {"part": "status", "id": broadcast_id})
+                bc_items = (bc_data or {}).get("items", [])
+                if bc_items and bc_items[0].get("status", {}).get("lifeCycleStatus") == "ready":
+                    break
+                time.sleep(1)
+            else:
+                return False, "Broadcast did not reach ready state — try again in a moment"
+
+            title = (last or {}).get("snippet", {}).get("title", "Live Stream")
             self._transition_to_live(broadcast_id)
             print(f"[youtube] Restarted broadcast {broadcast_id!r} ({title!r})", flush=True)
             return True, f"Broadcast restarted: {title}"
