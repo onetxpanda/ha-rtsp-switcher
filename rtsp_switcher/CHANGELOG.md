@@ -1,7 +1,8 @@
+## 4.1.1
+- Remove accidentally included custom Lovelace card file
+
 ## 4.1.0
 - Add `/embed` sub-URL that serves the same UI with embed mode activated server-side via `window.EMBED_MODE` (avoids fragile ingress token URLs or query string stripping)
-- Add `rtsp-switcher-card.js` custom Lovelace card — place in HA `www/` folder, register as a resource, use `type: custom:rtsp-switcher-card`; card fetches the ingress URL from the Supervisor API at runtime so nothing is hardcoded
-- Optional `height` config on the card (default 600px)
 
 ## 4.0.1
 - Fix restart broadcast: wait for broadcast to reach `ready` state after binding before calling transition — previously called transition while broadcast was still in `created` state, causing YouTube API "invalid transition" error
