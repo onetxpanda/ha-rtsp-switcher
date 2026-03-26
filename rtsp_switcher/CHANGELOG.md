@@ -1,3 +1,6 @@
+## 4.1.2
+- Fix embed mode: disable body scrolling
+
 ## 4.1.1
 - Remove accidentally included custom Lovelace card file
 
