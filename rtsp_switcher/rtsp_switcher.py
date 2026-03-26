@@ -406,7 +406,7 @@ _WEBUI_HTML = """<!DOCTYPE html>
 <!--INGRESS_PATH-->
 <script>
 (function(){
-  if (!new URLSearchParams(location.search).has('embed')) return;
+  if (!window.EMBED_MODE) return;
   document.documentElement.classList.add('embed');
   try {
     if (window.parent === window) return;
@@ -1284,6 +1284,16 @@ def _webui_index():
     html = _WEBUI_HTML.replace(
         "<!--INGRESS_PATH-->",
         f"<script>window.INGRESS_PATH={json.dumps(ingress_path)};</script>",
+    )
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+@_flask_app.route("/embed")
+def _webui_embed():
+    ingress_path = request.headers.get("X-Ingress-Path", "")
+    html = _WEBUI_HTML.replace(
+        "<!--INGRESS_PATH-->",
+        f"<script>window.INGRESS_PATH={json.dumps(ingress_path)};window.EMBED_MODE=true;</script>",
     )
     return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
