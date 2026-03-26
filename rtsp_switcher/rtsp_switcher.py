@@ -423,7 +423,19 @@ _WEBUI_HTML = """<!DOCTYPE html>
      ['--danger',  g('--error-color')],
      ['--success', g('--success-color')]
     ].forEach(function(p) { if (p[1]) r.style.setProperty(p[0], p[1]); });
-  } catch(_) {}
+    var bgV = g('--primary-background-color') || g('--lovelace-background');
+    if (isLight(bgV)) r.classList.add('light');
+  } catch(_) {
+    if (window.matchMedia('(prefers-color-scheme: light)').matches)
+      document.documentElement.classList.add('light');
+  }
+  function isLight(v) {
+    var m = (v||'').match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (!m) { m = (v||'').match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+      if (m) m = [0, parseInt(m[1],16), parseInt(m[2],16), parseInt(m[3],16)]; }
+    if (!m) return false;
+    return (0.2126*m[1] + 0.7152*m[2] + 0.0722*m[3]) / 255 > 0.5;
+  }
 })();
 </script>
 <style>
@@ -513,6 +525,9 @@ html.embed .tabbar { display: none; }
 html.embed .cam-actions { display: none; }
 html.embed .btn-add { display: none; }
 html.embed body, html.embed .content { overflow: hidden; }
+html.embed.light .yt-strip-time { color: #000; }
+html.embed.light .yt-strip.s-live { background: color-mix(in srgb, var(--accent) 15%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+html.embed.light .camera-row.active { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 </style>
 </head>
 <body>

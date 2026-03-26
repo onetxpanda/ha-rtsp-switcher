@@ -1,3 +1,7 @@
+## 4.1.4
+- Embed mode: detect light theme (from HA parent window CSS vars or prefers-color-scheme fallback) and add `html.light` class
+- Embed mode light theme: status bar text black instead of white, live status bar and active camera row use HA blue accent tint instead of green
+
 ## 4.1.3
 - Fix embed mode: also lock overflow on .content div which was the actual scroll source
 
