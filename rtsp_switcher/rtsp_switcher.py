@@ -393,6 +393,28 @@ _WEBUI_HTML = """<!DOCTYPE html>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <!--INGRESS_PATH-->
+<script>
+(function(){
+  if (!new URLSearchParams(location.search).has('embed')) return;
+  document.documentElement.classList.add('embed');
+  try {
+    if (window.parent === window) return;
+    var s = window.parent.getComputedStyle(window.parent.document.documentElement);
+    var g = function(n) { return s.getPropertyValue(n).trim(); };
+    var r = document.documentElement;
+    [['--bg',      g('--primary-background-color') || g('--lovelace-background')],
+     ['--surface', g('--card-background-color') || g('--ha-card-background') || g('--secondary-background-color')],
+     ['--surface2',g('--secondary-background-color')],
+     ['--border',  g('--divider-color')],
+     ['--text',    g('--primary-text-color')],
+     ['--muted',   g('--secondary-text-color') || g('--disabled-text-color')],
+     ['--accent',  g('--primary-color')],
+     ['--danger',  g('--error-color')],
+     ['--success', g('--success-color')]
+    ].forEach(function(p) { if (p[1]) r.style.setProperty(p[0], p[1]); });
+  } catch(_) {}
+})();
+</script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -476,6 +498,10 @@ input[type="password"] { font-family: monospace; }
 .toggle-slider::before { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform .15s; }
 .toggle input:checked + .toggle-slider { background: var(--accent); }
 .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+html.embed .tabbar { display: none; }
+html.embed .cam-actions { display: none; }
+html.embed .btn-add { display: none; }
+html.embed body { overflow-y: auto; }
 </style>
 </head>
 <body>

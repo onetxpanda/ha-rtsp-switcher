@@ -1,6 +1,6 @@
 name: "Youtube Live Manager"
 description: "Switches between RTSP camera streams and manages YouTube Live broadcasts."
-version: "3.0.2"
+version: "4.0.0"
 slug: "rtsp_switcher"
 init: false
 arch:

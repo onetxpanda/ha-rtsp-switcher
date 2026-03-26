@@ -1,3 +1,7 @@
+## 4.0.0
+- Add embed mode: append `?embed` to the ingress URL to get a stripped view (video feed, YouTube status bar, camera switching only — no tabs, no edit/delete/add)
+- Embed mode reads HA theme CSS variables from the parent window when loaded via ingress (same-origin), so the card matches the active HA theme automatically
+
 ## 3.0.2
 - Fix VideoPreview: improve "VideoDecoder not supported" message to distinguish between non-secure context (HTTP) and genuinely unsupported browser
 
