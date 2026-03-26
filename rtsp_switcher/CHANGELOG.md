@@ -1,3 +1,6 @@
+## 4.1.3
+- Fix embed mode: also lock overflow on .content div which was the actual scroll source
+
 ## 4.1.2
 - Fix embed mode: disable body scrolling
 

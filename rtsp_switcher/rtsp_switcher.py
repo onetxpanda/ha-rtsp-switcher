@@ -512,7 +512,7 @@ input[type="password"] { font-family: monospace; }
 html.embed .tabbar { display: none; }
 html.embed .cam-actions { display: none; }
 html.embed .btn-add { display: none; }
-html.embed body { overflow: hidden; }
+html.embed body, html.embed .content { overflow: hidden; }
 </style>
 </head>
 <body>
