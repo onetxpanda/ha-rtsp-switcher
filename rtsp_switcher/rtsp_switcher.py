@@ -130,6 +130,8 @@ class YouTubeManager(threading.Thread):
             return self._access_token
         except Exception as exc:
             print(f"[youtube] Token refresh failed: {exc}", flush=True)
+            self._access_token = None
+            self._token_expires_at = 0.0
             return None
 
     def _get_token(self) -> str | None:
@@ -360,8 +362,20 @@ class YouTubeManager(threading.Thread):
                     print(f"[youtube] Auto-restart result: {msg}", flush=True)
         except Exception as exc:
             print(f"[youtube] Poll error: {exc}", flush=True)
+            err_str = str(exc)
+            is_auth_error = "No access token" in err_str or "401" in err_str
             with self._lock:
-                self._status["last_error"] = str(exc)
+                self._status["last_error"] = err_str
+                if is_auth_error:
+                    prev_live = self._status.get("live", False)
+                    self._access_token = None
+                    self._token_expires_at = 0.0
+                    self._status.update({
+                        "live": False, "broadcast_id": None, "title": None,
+                        "stream_health": None, "stream_issues": [],
+                        "started_at": None,
+                        "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if prev_live else self._status.get("ended_at"),
+                    })
 
     def force_poll(self):
         self._poll_now.set()

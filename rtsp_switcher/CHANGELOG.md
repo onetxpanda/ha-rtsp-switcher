@@ -1,3 +1,8 @@
+## 4.1.5
+- Fix YouTube status showing stream as live indefinitely after auth token expiry or revocation
+- Auth errors (401, failed token refresh) now properly clear live status and reset the cached token
+- Prevents the uptime timer from counting when the API connection is actually dead
+
 ## 4.1.4
 - Embed mode: detect light theme (from HA parent window CSS vars or prefers-color-scheme fallback) and add `html.light` class
 - Embed mode light theme: status bar text black instead of white, live status bar and active camera row use HA blue accent tint instead of green
