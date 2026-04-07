@@ -130,6 +130,7 @@ class YouTubeManager(threading.Thread):
             return self._access_token
         except Exception as exc:
             print(f"[youtube] Token refresh failed: {exc}", flush=True)
+            print("[youtube] If tokens expire within days, ensure the Google Cloud OAuth consent screen is set to 'Production' (not 'Testing')", flush=True)
             self._access_token = None
             self._token_expires_at = 0.0
             return None
@@ -250,8 +251,7 @@ class YouTubeManager(threading.Thread):
             content_details = {}
             for key in ("enableDvr", "enableContentEncryption", "enableEmbed",
                         "recordFromStart", "startWithSlate", "projection",
-                        "latencyPreference", "enableAutoStart", "enableAutoStop",
-                        "closedCaptionsType"):
+                        "latencyPreference", "closedCaptionsType"):
                 if key in src_cd:
                     content_details[key] = src_cd[key]
             if src_monitor:
@@ -261,10 +261,12 @@ class YouTubeManager(threading.Thread):
                         monitor[key] = src_monitor[key]
                 if monitor:
                     content_details["monitorStream"] = monitor
+            content_details["enableAutoStart"] = False
+            content_details["enableAutoStop"] = False
         else:
             snippet = {"title": "Live Stream", "description": "", "scheduledStartTime": now}
             status = {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
-            content_details = {}
+            content_details = {"enableAutoStart": False, "enableAutoStop": False}
 
         body = {"snippet": snippet, "status": status, "contentDetails": content_details}
         result = self._api_post("liveBroadcasts", body, {"part": "snippet,status,contentDetails"})
@@ -309,16 +311,21 @@ class YouTubeManager(threading.Thread):
                 return False, "Stream not active after 30s — is RTMP pushing?"
 
             # Wait up to 15s for the broadcast to reach ready state before transitioning
+            bc_status = None
             for _ in range(15):
                 bc_data = self._api_get("liveBroadcasts", {"part": "status", "id": broadcast_id})
                 bc_items = (bc_data or {}).get("items", [])
-                if bc_items and bc_items[0].get("status", {}).get("lifeCycleStatus") == "ready":
+                bc_status = bc_items[0].get("status", {}).get("lifeCycleStatus") if bc_items else None
+                if bc_status in ("ready", "liveStarting", "live"):
                     break
                 time.sleep(1)
             else:
-                return False, "Broadcast did not reach ready state — try again in a moment"
+                return False, f"Broadcast did not reach ready state (stuck in {bc_status!r}) — try again in a moment"
 
             title = (last or {}).get("snippet", {}).get("title", "Live Stream")
+            if bc_status == "live":
+                print(f"[youtube] Broadcast {broadcast_id!r} already live ({title!r})", flush=True)
+                return True, f"Broadcast already live: {title}"
             self._transition_to_live(broadcast_id)
             print(f"[youtube] Restarted broadcast {broadcast_id!r} ({title!r})", flush=True)
             return True, f"Broadcast restarted: {title}"
@@ -363,7 +370,7 @@ class YouTubeManager(threading.Thread):
         except Exception as exc:
             print(f"[youtube] Poll error: {exc}", flush=True)
             err_str = str(exc)
-            is_auth_error = "No access token" in err_str or "401" in err_str
+            is_auth_error = "No access token" in err_str or ": 401 " in err_str
             with self._lock:
                 self._status["last_error"] = err_str
                 if is_auth_error:

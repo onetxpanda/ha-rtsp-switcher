@@ -1,3 +1,8 @@
+## 4.1.6
+- Fix "invalid transition" error when restarting broadcasts: explicitly disable enableAutoStart/enableAutoStop so the code controls transitions, and handle broadcasts that already transitioned past ready state
+- Fix overly broad auth error detection: only match actual HTTP 401 responses, not unrelated errors containing "401" in the message
+- Log hint about Google Cloud OAuth consent screen "Production" vs "Testing" mode when token refresh fails (Testing mode expires tokens after 7 days)
+
 ## 4.1.5
 - Fix YouTube status showing stream as live indefinitely after auth token expiry or revocation
 - Auth errors (401, failed token refresh) now properly clear live status and reset the cached token
