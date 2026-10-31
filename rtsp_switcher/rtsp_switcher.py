@@ -104,6 +104,9 @@ class YouTubeManager(threading.Thread):
             "last_error": None, "started_at": None, "ended_at": None,
         }
         self._auto_restart: bool = False
+        self._restart_lock = threading.Lock()
+        self._auto_restart_backoff: float = 0.0     # seconds; 0 = no failures yet
+        self._auto_restart_retry_at: float = 0.0    # monotonic time of next allowed auto-restart
         self._stopping = threading.Event()
         self._poll_now = threading.Event()
 
@@ -192,6 +195,21 @@ class YouTubeManager(threading.Thread):
     def set_auto_restart(self, enabled: bool):
         with self._lock:
             self._auto_restart = enabled
+            self._auto_restart_backoff = 0.0
+            self._auto_restart_retry_at = 0.0
+
+    def reset_auth(self):
+        """Forget cached credentials and live status (refresh token was revoked)."""
+        with self._lock:
+            self._access_token = None
+            self._token_expires_at = 0.0
+            prev_live = self._status.get("live", False)
+            self._status = {
+                "live": False, "broadcast_id": None, "title": None,
+                "stream_health": None, "stream_issues": [],
+                "last_error": None, "started_at": None,
+                "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if prev_live else self._status.get("ended_at"),
+            }
 
     # ── YouTube workflow ──────────────────────────────────────────────────────
 
@@ -219,6 +237,16 @@ class YouTubeManager(threading.Thread):
         result = self._api_get("liveStreams", {"part": "cdn,status", "mine": "true", "maxResults": "50"})
         for item in (result or {}).get("items", []):
             if item.get("cdn", {}).get("ingestionInfo", {}).get("streamName") == stream_key:
+                return item
+        return None
+
+    def _get_upcoming_broadcast_for_stream(self, stream_id: str) -> dict | None:
+        """Find a not-yet-live broadcast already bound to stream_id (e.g. left by a failed restart)."""
+        result = self._api_get("liveBroadcasts", {
+            "part": "snippet,status,contentDetails", "broadcastStatus": "upcoming", "maxResults": "50",
+        })
+        for item in (result or {}).get("items", []):
+            if item.get("contentDetails", {}).get("boundStreamId") == stream_id:
                 return item
         return None
 
@@ -284,54 +312,61 @@ class YouTubeManager(threading.Thread):
 
     def restart_broadcast(self) -> tuple[bool, str]:
         """Full restart workflow. Returns (success, message)."""
+        # Manual button and auto-restart can race; never run two restarts at once
+        if not self._restart_lock.acquire(blocking=False):
+            return False, "Restart already in progress"
         try:
-            if self._get_active_broadcast():
-                return True, "Already live"
+            return self._restart_broadcast_locked()
+        except Exception as exc:
+            return False, str(exc)
+        finally:
+            self._restart_lock.release()
 
-            live_stream = self._get_live_stream()
-            if not live_stream:
-                return False, "No liveStream found matching RTMP stream key"
-            stream_id = live_stream["id"]
+    def _restart_broadcast_locked(self) -> tuple[bool, str]:
+        if self._get_active_broadcast():
+            return True, "Already live"
 
+        live_stream = self._get_live_stream()
+        if not live_stream:
+            return False, "No liveStream found matching RTMP stream key"
+        stream_id = live_stream["id"]
+
+        # Check ingest before creating anything, so a dead RTMP feed doesn't leave orphan broadcasts
+        if live_stream.get("status", {}).get("streamStatus") != "active":
+            return False, "Stream not active — is RTMP pushing?"
+
+        # Reuse a broadcast left bound to our stream by an earlier attempt instead of creating another
+        existing = self._get_upcoming_broadcast_for_stream(stream_id)
+        if existing:
+            broadcast_id = existing["id"]
+            title = existing.get("snippet", {}).get("title", "Live Stream")
+            print(f"[youtube] Reusing upcoming broadcast {broadcast_id!r} ({title!r})", flush=True)
+        else:
             last = self._get_last_broadcast()
             broadcast_id = self._create_broadcast(last)
             if not broadcast_id:
                 return False, "Failed to create broadcast"
-
+            title = (last or {}).get("snippet", {}).get("title", "Live Stream")
             self._bind_broadcast(broadcast_id, stream_id)
 
-            # Wait up to 30s for the liveStream to become active
-            for _ in range(30):
-                stream_data = self._api_get("liveStreams", {"part": "status", "id": stream_id})
-                items = (stream_data or {}).get("items", [])
-                if items and items[0].get("status", {}).get("streamStatus") == "active":
-                    break
-                time.sleep(1)
-            else:
-                return False, "Stream not active after 30s — is RTMP pushing?"
+        # Wait up to 15s for the broadcast to reach ready state before transitioning
+        bc_status = None
+        for _ in range(15):
+            bc_data = self._api_get("liveBroadcasts", {"part": "status", "id": broadcast_id})
+            bc_items = (bc_data or {}).get("items", [])
+            bc_status = bc_items[0].get("status", {}).get("lifeCycleStatus") if bc_items else None
+            if bc_status in ("ready", "testing", "liveStarting", "live"):
+                break
+            time.sleep(1)
+        else:
+            return False, f"Broadcast did not reach ready state (stuck in {bc_status!r}) — try again in a moment"
 
-            # Wait up to 15s for the broadcast to reach ready state before transitioning
-            bc_status = None
-            for _ in range(15):
-                bc_data = self._api_get("liveBroadcasts", {"part": "status", "id": broadcast_id})
-                bc_items = (bc_data or {}).get("items", [])
-                bc_status = bc_items[0].get("status", {}).get("lifeCycleStatus") if bc_items else None
-                if bc_status in ("ready", "liveStarting", "live"):
-                    break
-                time.sleep(1)
-            else:
-                return False, f"Broadcast did not reach ready state (stuck in {bc_status!r}) — try again in a moment"
-
-            title = (last or {}).get("snippet", {}).get("title", "Live Stream")
-            if bc_status == "live":
-                print(f"[youtube] Broadcast {broadcast_id!r} already live ({title!r})", flush=True)
-                return True, f"Broadcast already live: {title}"
-            self._transition_to_live(broadcast_id)
-            print(f"[youtube] Restarted broadcast {broadcast_id!r} ({title!r})", flush=True)
-            return True, f"Broadcast restarted: {title}"
-
-        except Exception as exc:
-            return False, str(exc)
+        if bc_status == "live":
+            print(f"[youtube] Broadcast {broadcast_id!r} already live ({title!r})", flush=True)
+            return True, f"Broadcast already live: {title}"
+        self._transition_to_live(broadcast_id)
+        print(f"[youtube] Restarted broadcast {broadcast_id!r} ({title!r})", flush=True)
+        return True, f"Broadcast restarted: {title}"
 
     # ── Background poll ───────────────────────────────────────────────────────
 
@@ -343,6 +378,8 @@ class YouTubeManager(threading.Thread):
                 stream_id = active.get("contentDetails", {}).get("boundStreamId")
                 health = self._get_stream_health(stream_id) if stream_id else {}
                 with self._lock:
+                    self._auto_restart_backoff = 0.0
+                    self._auto_restart_retry_at = 0.0
                     self._status = {
                         "live": True,
                         "broadcast_id": active.get("id"),
@@ -362,11 +399,20 @@ class YouTubeManager(threading.Thread):
                         "stream_health": None, "stream_issues": [],
                         "last_error": None, "started_at": None, "ended_at": ended_at,
                     }
-                    auto = self._auto_restart
+                    auto = self._auto_restart and time.monotonic() >= self._auto_restart_retry_at
                 if auto:
                     print("[youtube] Broadcast not live, auto-restarting...", flush=True)
                     ok, msg = self.restart_broadcast()
                     print(f"[youtube] Auto-restart result: {msg}", flush=True)
+                    with self._lock:
+                        if ok:
+                            self._auto_restart_backoff = 0.0
+                            self._auto_restart_retry_at = 0.0
+                        else:
+                            # Back off 60s, 120s, ... up to 30 min to protect the API quota
+                            self._auto_restart_backoff = min(max(self._auto_restart_backoff * 2, 60.0), 1800.0)
+                            self._auto_restart_retry_at = time.monotonic() + self._auto_restart_backoff
+                            print(f"[youtube] Next auto-restart attempt in {self._auto_restart_backoff:.0f}s", flush=True)
         except Exception as exc:
             print(f"[youtube] Poll error: {exc}", flush=True)
             err_str = str(exc)
@@ -1115,8 +1161,12 @@ function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
 
   const revokeAuth = async () => {
     if (!confirm('Remove stored refresh token?')) return;
-    const newCfg = { ...config, youtube_refresh_token: '' };
-    if (await saveConfig(newCfg)) { onConfigChange(newCfg); showToast('Token removed', true); }
+    try {
+      const r = await fetch(`${BASE}/api/youtube/auth/revoke`, { method: 'POST' });
+      if (!r.ok) throw new Error();
+      showToast('Token removed', true);
+    } catch { showToast('Failed to remove token', false); }
+    fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {});
   };
 
   const doRefresh = async () => {
@@ -1312,6 +1362,7 @@ _manager_ref = None
 _ha_listener_ref = None
 _youtube_manager_ref: YouTubeManager | None = None
 _yt_device_flow_state: dict = {}  # device_code while auth is in progress
+_SERVER_MANAGED_KEYS = ("youtube_refresh_token", "youtube_auto_restart")
 
 
 @_flask_app.route("/")
@@ -1344,6 +1395,13 @@ def _api_config_post():
     new_cfg = request.get_json(force=True)
     if not isinstance(new_cfg, dict):
         return jsonify({"error": "invalid body"}), 400
+    # Keys owned by dedicated endpoints — never taken from the client, whose copy may be stale
+    current = _get_cfg()
+    for key in _SERVER_MANAGED_KEYS:
+        if key in current:
+            new_cfg[key] = current[key]
+        else:
+            new_cfg.pop(key, None)
     try:
         _save_config(new_cfg)
     except Exception as exc:
@@ -1485,6 +1543,16 @@ def _api_youtube_auth_poll():
         return jsonify({"error": err}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+@_flask_app.route("/api/youtube/auth/revoke", methods=["POST"])
+def _api_youtube_auth_revoke():
+    new_cfg = dict(_get_cfg())
+    new_cfg["youtube_refresh_token"] = ""
+    _save_config(new_cfg)
+    if _youtube_manager_ref:
+        _youtube_manager_ref.reset_auth()
+    return jsonify({"ok": True})
 
 
 @_flask_app.route("/api/youtube/restart", methods=["POST"])

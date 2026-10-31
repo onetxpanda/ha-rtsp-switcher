@@ -1,3 +1,9 @@
+## 4.1.7
+- Fix YouTube refresh token being wiped by any UI save after authorising: the server now ignores client-sent `youtube_refresh_token` and `youtube_auto_restart` (the browser's copy could be stale); token removal uses a new `/api/youtube/auth/revoke` endpoint, which also clears the cached access token and live status
+- Fix auto-restart leaving an orphan broadcast every cycle (and burning API quota) while RTMP isn't pushing: the stream's ingest is checked before any broadcast is created, and an existing upcoming broadcast bound to the stream is reused instead of creating another
+- Auto-restart backs off after failures (60s doubling up to 30 min), resetting once the broadcast is live
+- Prevent concurrent broadcast restarts (manual button + auto-restart) from creating duplicate broadcasts
+
 ## 4.1.6
 - Fix "invalid transition" error when restarting broadcasts: explicitly disable enableAutoStart/enableAutoStop so the code controls transitions, and handle broadcasts that already transitioned past ready state
 - Fix overly broad auth error detection: only match actual HTTP 401 responses, not unrelated errors containing "401" in the message
