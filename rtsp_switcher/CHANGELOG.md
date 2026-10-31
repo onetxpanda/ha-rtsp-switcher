@@ -1,3 +1,10 @@
+## 4.3.1
+- Fix "Invalid transition" when restarting: with the monitor stream enabled (YouTube's default), broadcasts now go ready → testing → live instead of ready → live
+- Reuse the existing broadcast bound to the stream again instead of creating a new one every attempt (keeps title/description/settings and avoids YouTube's limit on creating broadcasts); older leftovers are only deleted after a successful restart
+- Restarts only run while the pipeline is actually sending video (auto-restart waits for 15s of continuous output), so attempts at addon startup or during camera outages no longer waste API calls
+- Never skip auto-restart to save quota; instead, status polling slows to every 5 min once 80% of the daily budget is used. Auto-restart backoff is capped at 5 min (was 30)
+- Fix SyntaxWarning logged at startup
+
 ## 4.3.0
 - After a restart, the broadcast shows "Starting…" until YouTube actually confirms it is live (checked every 10s for up to 2 min, then back to 60s polling); if it never goes live, an error is shown instead
 - Status strip shows "Not sending video to YouTube" within seconds whenever the local pipeline stops producing output, without waiting for a YouTube API poll

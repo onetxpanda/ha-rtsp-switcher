@@ -66,8 +66,9 @@ _YT_HEALTH_POLL_SEC = 60     # stream health poll while live (1 unit)
 _YT_FAST_POLL_SEC = 10       # poll interval while confirming a change we triggered
 _YT_FAST_POLL_WINDOW_SEC = 120
 _YT_DAILY_QUOTA_DEFAULT = 10000
-_YT_AUTO_RESTART_QUOTA_FRACTION = 0.9   # auto-restart stops at this share of the budget; manual still works
-_YT_RESTART_COST_ESTIMATE = 200
+_YT_SLOW_POLL_QUOTA_FRACTION = 0.8      # above this share of the budget, poll slowly to keep units for restarts
+_YT_SLOW_POLL_SEC = 300
+_YT_MIN_SENDING_SEC = 15      # pipeline must be outputting this long before auto-restart tries
 
 
 def _utc_iso() -> str:
@@ -146,6 +147,7 @@ class YouTubeManager(threading.Thread):
         self._last_health: dict = {}
         self._fast_poll_until: float = 0.0          # monotonic; poll fast until then or until confirmed
         self._expect_live: bool | None = None       # state we're waiting to see confirmed
+        self.poll_interval_sec: int = _YT_POLL_SEC  # current cadence, reported to the UI
         self._stopping = threading.Event()
         self._poll_now = threading.Event()
 
@@ -399,13 +401,28 @@ class YouTubeManager(threading.Thread):
             "id": broadcast_id, "streamId": stream_id, "part": "snippet",
         })
 
-    def _transition_to_live(self, broadcast_id: str):
+    def _transition(self, broadcast_id: str, to: str):
         self._api_post("liveBroadcasts/transition", params={
-            "broadcastStatus": "live", "id": broadcast_id, "part": "status",
+            "broadcastStatus": to, "id": broadcast_id, "part": "status",
         })
+
+    def _wait_for_lifecycle(self, broadcast_id: str, wanted: tuple, timeout_sec: int,
+                            interval_sec: int) -> tuple[str | None, dict]:
+        """Poll the broadcast until its lifeCycleStatus is in wanted or timeout. Returns (status, item)."""
+        deadline = time.monotonic() + timeout_sec
+        while True:
+            data = self._api_get("liveBroadcasts", {"part": "status,contentDetails", "id": broadcast_id})
+            items = (data or {}).get("items", [])
+            item = items[0] if items else {}
+            status = item.get("status", {}).get("lifeCycleStatus")
+            if status in wanted or time.monotonic() >= deadline:
+                return status, item
+            time.sleep(interval_sec)
 
     def restart_broadcast(self) -> tuple[bool, str]:
         """Full restart workflow. Returns (success, message)."""
+        if _manager_ref is not None and not _manager_ref.output_active:
+            return False, "Not sending video to YouTube — the camera pipeline isn't producing output"
         # Manual button and auto-restart can race; never run two restarts at once
         if not self._restart_lock.acquire(blocking=False):
             return False, "Restart already in progress"
@@ -425,53 +442,64 @@ class YouTubeManager(threading.Thread):
             return False, "No liveStream found matching RTMP stream key"
         stream_id = live_stream["id"]
 
-        # Check ingest before creating anything, so a dead RTMP feed doesn't leave orphan broadcasts
+        # Check ingest before touching broadcasts, so a dead RTMP feed costs nothing more
         if live_stream.get("status", {}).get("streamStatus") != "active":
             return False, "Stream not active — is RTMP pushing?"
 
-        # Leftover broadcasts may be the only copy of the user's title/description/settings,
-        # so the newest one is the template; fall back to the last completed broadcast
+        # Reuse a broadcast already bound to our stream (left by an earlier attempt) — it carries the
+        # user's title/description/settings, and YouTube rate-limits creating new broadcasts
         stale = self._get_stale_broadcasts(stream_id)
-        template = stale[0] if stale else self._get_last_broadcast()
-        broadcast_id = self._create_broadcast(template)
-        if not broadcast_id:
-            return False, "Failed to create broadcast"
-        title = (template or {}).get("snippet", {}).get("title", "Live Stream")
-        try:
-            self._bind_broadcast(broadcast_id, stream_id)
-        except Exception:
-            # Unbound, it wouldn't be picked up as a leftover later; leftovers are untouched so far
-            self._delete_broadcast(broadcast_id)
-            raise
-
-        # The new broadcast now holds the settings; old leftovers bound to the same stream can't be
-        # transitioned reliably, so clear them. From here on the new broadcast is never deleted —
-        # if this attempt fails, the next one uses it as its template and clears it instead.
-        for item in stale:
-            self._delete_broadcast(item["id"])
-
-        # Wait up to 15s for the broadcast to reach ready state before transitioning
-        bc_status = None
-        for _ in range(15):
-            bc_data = self._api_get("liveBroadcasts", {"part": "status", "id": broadcast_id})
-            bc_items = (bc_data or {}).get("items", [])
-            bc_status = bc_items[0].get("status", {}).get("lifeCycleStatus") if bc_items else None
-            if bc_status in ("ready", "testing", "liveStarting", "live"):
-                break
-            time.sleep(1)
+        if stale:
+            broadcast_id = stale[0]["id"]
+            title = stale[0].get("snippet", {}).get("title", "Live Stream")
+            print(f"[youtube] Reusing broadcast {broadcast_id!r} ({title!r})", flush=True)
         else:
-            return False, f"Broadcast did not reach ready state (stuck in {bc_status!r}) — try again in a moment"
+            last = self._get_last_broadcast()
+            broadcast_id = self._create_broadcast(last)
+            if not broadcast_id:
+                return False, "Failed to create broadcast"
+            title = (last or {}).get("snippet", {}).get("title", "Live Stream")
+            try:
+                self._bind_broadcast(broadcast_id, stream_id)
+            except Exception:
+                # Unbound, it wouldn't be found for reuse later
+                self._delete_broadcast(broadcast_id)
+                raise
+            print(f"[youtube] Created broadcast {broadcast_id!r} ({title!r})", flush=True)
 
-        if bc_status == "live":
-            print(f"[youtube] Broadcast {broadcast_id!r} already live ({title!r})", flush=True)
+        usable = ("ready", "testStarting", "testing", "liveStarting", "live")
+        status, item = self._wait_for_lifecycle(broadcast_id, usable, timeout_sec=15, interval_sec=1)
+        if status not in usable:
+            return False, f"Broadcast did not reach ready state (stuck in {status!r}) — try again in a moment"
+        if status in ("liveStarting", "live"):
+            print(f"[youtube] Broadcast {broadcast_id!r} already {status} ({title!r})", flush=True)
             self._mark_started(broadcast_id, title)
             return True, f"Broadcast already live: {title}"
+
+        # With the monitor stream enabled (YouTube's default), ready -> live is an invalid transition;
+        # the broadcast has to pass through testing first
+        monitor = item.get("contentDetails", {}).get("monitorStream", {}).get("enableMonitorStream", True)
+        if status == "ready" and monitor:
+            try:
+                self._transition(broadcast_id, "testing")
+            except RuntimeError as exc:
+                raise RuntimeError(f"{exc} (transition to testing; broadcast was {status!r})") from exc
+            status = "testStarting"
+        if status == "testStarting":
+            status, _ = self._wait_for_lifecycle(broadcast_id, ("testing",), timeout_sec=60, interval_sec=3)
+            if status != "testing":
+                return False, f"Broadcast did not reach testing state (stuck in {status!r}) — try again in a moment"
+
         try:
-            self._transition_to_live(broadcast_id)
+            self._transition(broadcast_id, "live")
         except RuntimeError as exc:
-            raise RuntimeError(f"{exc} (broadcast was {bc_status!r})") from exc
+            raise RuntimeError(f"{exc} (transition to live; broadcast was {status!r})") from exc
         print(f"[youtube] Restarted broadcast {broadcast_id!r} ({title!r})", flush=True)
         self._mark_started(broadcast_id, title)
+
+        # Only now, with a broadcast live, clear older leftovers (capped — each delete costs 50 units)
+        for other in stale[1:6]:
+            self._delete_broadcast(other["id"])
         return True, f"Broadcast restarted: {title}"
 
     def _mark_started(self, broadcast_id: str, title: str):
@@ -540,9 +568,9 @@ class YouTubeManager(threading.Thread):
                         "started_at": None, "ended_at": ended_at, "checked_at": _utc_iso(),
                     }
                     auto = self._auto_restart and time.monotonic() >= self._auto_restart_retry_at
-                budget = int(_get_cfg().get("youtube_daily_quota", _YT_DAILY_QUOTA_DEFAULT))
-                if auto and self.quota_used() + _YT_RESTART_COST_ESTIMATE > budget * _YT_AUTO_RESTART_QUOTA_FRACTION:
-                    print(f"[youtube] Skipping auto-restart: ~{self.quota_used()} of {budget} quota units used today", flush=True)
+                # Don't spend API calls restarting until we've been sending video long enough for
+                # YouTube to see it (also covers addon startup, before the pipeline is up)
+                if auto and (_manager_ref is None or _manager_ref.output_stable_sec < _YT_MIN_SENDING_SEC):
                     auto = False
                 if auto:
                     print("[youtube] Broadcast not live, auto-restarting...", flush=True)
@@ -553,8 +581,8 @@ class YouTubeManager(threading.Thread):
                             self._auto_restart_backoff = 0.0
                             self._auto_restart_retry_at = 0.0
                         else:
-                            # Back off 60s, 120s, ... up to 30 min to protect the API quota
-                            self._auto_restart_backoff = min(max(self._auto_restart_backoff * 2, 60.0), 1800.0)
+                            # Back off 60s, 120s, ... capped at 5 min: a down broadcast is worse than a few API calls
+                            self._auto_restart_backoff = min(max(self._auto_restart_backoff * 2, 60.0), 300.0)
                             self._auto_restart_retry_at = time.monotonic() + self._auto_restart_backoff
                             print(f"[youtube] Next auto-restart attempt in {self._auto_restart_backoff:.0f}s", flush=True)
         except Exception as exc:
@@ -593,8 +621,12 @@ class YouTubeManager(threading.Thread):
             self._poll_now.clear()
             with self._lock:
                 fast = time.monotonic() < self._fast_poll_until
-            # or wake early via force_poll() / stop()
-            self._poll_now.wait(_YT_FAST_POLL_SEC if fast else _YT_POLL_SEC)
+            # Never skip restarts to save quota — when the budget is tight, poll status less instead
+            budget = int(_get_cfg().get("youtube_daily_quota", _YT_DAILY_QUOTA_DEFAULT))
+            tight = self.quota_used() > budget * _YT_SLOW_POLL_QUOTA_FRACTION
+            interval = _YT_FAST_POLL_SEC if fast else _YT_SLOW_POLL_SEC if tight else _YT_POLL_SEC
+            self.poll_interval_sec = interval
+            self._poll_now.wait(interval)  # or wake early via force_poll() / stop()
 
     def stop(self):
         self._stopping.set()
@@ -652,7 +684,7 @@ _WEBUI_HTML = """<!DOCTYPE html>
       document.documentElement.classList.add('light');
   }
   function isLight(v) {
-    var m = (v||'').match(/rgb[a]?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    var m = (v||'').match(/rgb[a]?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)/);
     if (!m) { m = (v||'').match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
       if (m) m = [0, parseInt(m[1],16), parseInt(m[2],16), parseInt(m[3],16)]; }
     if (!m) return false;
@@ -814,8 +846,8 @@ function HealthWarn({ health, issues }) {
   );
 }
 
-// YouTube status is polled every 60s; past this age we can't vouch for it
-const YT_STALE_SEC = 150;
+// Past 2.5 poll intervals without a successful check we can't vouch for the YouTube status
+const ytStaleSec = (yt) => 2.5 * (yt?.poll_interval_sec || 60);
 function ytAgeSec(yt) {
   if (!yt?.checked_at) return null;
   return Math.floor((Date.now() - new Date(yt.checked_at)) / 1000);
@@ -830,7 +862,7 @@ function YtStrip({ yt }) {
   useEffect(() => { const id = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(id); }, []);
   if (!yt?.configured) return <div className="yt-strip s-idle" />;
   const age = ytAgeSec(yt);
-  const stale = age === null || age > YT_STALE_SEC;
+  const stale = age === null || age > ytStaleSec(yt);
   if (stale && !yt.starting) {
     return (
       <div className="yt-strip s-warn">
@@ -1680,6 +1712,7 @@ def _api_youtube_status():
     status["configured"] = configured
     status["auto_restart"] = cfg.get("youtube_auto_restart", False)
     status["rtmp_sending"] = _manager_ref.output_active if _manager_ref else False
+    status["poll_interval_sec"] = m.poll_interval_sec if m else _YT_POLL_SEC
     status["quota_used"] = m.quota_used() if m else 0
     status["quota_budget"] = int(cfg.get("youtube_daily_quota", _YT_DAILY_QUOTA_DEFAULT))
     return jsonify(status)
@@ -1961,7 +1994,7 @@ def _video_loop(pipeline, video_queue):
             pass  # drop if queue full
 
 
-def pipeline_worker(stream: dict, cfg: dict, snapshot_queue, video_queue, last_output_shared):
+def pipeline_worker(stream: dict, cfg: dict, snapshot_queue, video_queue, last_output_shared, first_output_shared):
     """Runs in a child process. Owns GStreamer entirely."""
     import gi
     gi.require_version("Gst", "1.0")
@@ -1995,6 +2028,8 @@ def pipeline_worker(stream: dict, cfg: dict, snapshot_queue, video_queue, last_o
             def on_output_probe(_pad, _info):
                 last_output_time[0] = time.monotonic()
                 last_output_shared.value = time.time()  # read by the main process for live UI status
+                if not first_output_shared.value:
+                    first_output_shared.value = last_output_shared.value
                 return Gst.PadProbeReturn.OK
             pad.add_probe(Gst.PadProbeType.BUFFER, on_output_probe)
 
@@ -2178,11 +2213,21 @@ class PipelineManager(threading.Thread):
         self._pipeline_generation = 0
         # Wall-clock time of the last encoded frame, written by the worker process
         self._last_output = multiprocessing.Value("d", 0.0, lock=False)
+        # Wall-clock time of the first encoded frame from the current worker
+        self._first_output = multiprocessing.Value("d", 0.0, lock=False)
 
     @property
     def output_active(self) -> bool:
         """True if the pipeline produced output within the last few seconds (i.e. RTMP is being fed)."""
         return time.time() - self._last_output.value < 3
+
+    @property
+    def output_stable_sec(self) -> float:
+        """How long the current pipeline has been continuously producing output (0 if it isn't)."""
+        first = self._first_output.value
+        if not first or not self.output_active:
+            return 0.0
+        return time.time() - first
 
     @property
     def pipeline_generation(self):
@@ -2261,9 +2306,11 @@ class PipelineManager(threading.Thread):
                 except Exception:
                     break
 
+            self._first_output.value = 0.0
             p = multiprocessing.Process(
                 target=pipeline_worker,
-                args=(stream, cfg, self._snapshot_queue, self._video_queue, self._last_output),
+                args=(stream, cfg, self._snapshot_queue, self._video_queue,
+                      self._last_output, self._first_output),
                 name=f"pipeline-{stream_name}",
             )
             p.start()

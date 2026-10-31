@@ -103,7 +103,5 @@ Several items (3, 4, 6) go away naturally if the multi-camera architecture in `P
   status to Idle. Distinguish `invalid_grant`/401 from network errors.
 - **Device-flow `slow_down`:** treated as fatal in `/api/youtube/auth/poll`. Treat as pending (and
   ideally increase the client poll interval).
-- **SyntaxWarning on startup:** the embed-mode JS regex in `_WEBUI_HTML` (`/rgb[a]?\(.../`) is an
-  invalid Python escape in a non-raw string. Escape as `\\(` or make the HTML a raw string.
 - **Duplicate camera names** are allowed in the UI but names are used as IDs. Reject duplicates in
   `CameraModal`/server-side.
