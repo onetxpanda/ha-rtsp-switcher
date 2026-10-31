@@ -1,3 +1,10 @@
+## 4.1.8
+- Fix auto-restart failing with "Invalid transition" when reusing a leftover broadcast: always create a fresh broadcast instead
+- The new broadcast copies its title, description and settings from the newest leftover upcoming broadcast bound to the stream (falling back to the last completed broadcast), so settings are kept even when no completed broadcast exists
+- Once the new broadcast is created and bound, past-scheduled leftover upcoming broadcasts bound to the stream are deleted (cleans up after failed restarts in 4.1.6 and earlier); future-scheduled broadcasts are untouched
+- A failed restart leaves at most one leftover, which the next attempt uses as its template and then removes
+- Transition errors now include the broadcast's lifecycle state for easier diagnosis
+
 ## 4.1.7
 - Fix YouTube refresh token being wiped by any UI save after authorising: the server now ignores client-sent `youtube_refresh_token` and `youtube_auto_restart` (the browser's copy could be stale); token removal uses a new `/api/youtube/auth/revoke` endpoint, which also clears the cached access token and live status
 - Fix auto-restart leaving an orphan broadcast every cycle (and burning API quota) while RTMP isn't pushing: the stream's ingest is checked before any broadcast is created, and an existing upcoming broadcast bound to the stream is reused instead of creating another

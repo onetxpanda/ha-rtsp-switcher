@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import datetime
 import multiprocessing
 import os
 import pathlib
@@ -186,6 +187,25 @@ class YouTubeManager(threading.Thread):
                 detail = body_bytes.decode(errors="replace")
             raise RuntimeError(f"POST {path}: {exc.code} {detail}") from exc
 
+    def _api_delete(self, path: str, params: dict | None = None):
+        token = self._get_token()
+        if not token:
+            raise RuntimeError("No access token — check OAuth credentials")
+        url = f"{_YT_API}/{path}"
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method="DELETE")
+        try:
+            with urllib.request.urlopen(req, timeout=15):
+                pass  # 204 No Content
+        except urllib.error.HTTPError as exc:
+            body_bytes = exc.read()
+            try:
+                detail = json.loads(body_bytes).get("error", {}).get("message", body_bytes.decode())
+            except Exception:
+                detail = body_bytes.decode(errors="replace")
+            raise RuntimeError(f"DELETE {path}: {exc.code} {detail}") from exc
+
     # ── Public accessors ──────────────────────────────────────────────────────
 
     def get_status(self) -> dict:
@@ -240,15 +260,32 @@ class YouTubeManager(threading.Thread):
                 return item
         return None
 
-    def _get_upcoming_broadcast_for_stream(self, stream_id: str) -> dict | None:
-        """Find a not-yet-live broadcast already bound to stream_id (e.g. left by a failed restart)."""
+    def _get_stale_broadcasts(self, stream_id: str) -> list[dict]:
+        """Not-yet-live broadcasts bound to stream_id whose scheduled start has passed (left behind
+        by failed restarts), newest first. Future-scheduled broadcasts are excluded."""
         result = self._api_get("liveBroadcasts", {
             "part": "snippet,status,contentDetails", "broadcastStatus": "upcoming", "maxResults": "50",
         })
+        now = datetime.datetime.now(datetime.timezone.utc)
+        stale = []
         for item in (result or {}).get("items", []):
-            if item.get("contentDetails", {}).get("boundStreamId") == stream_id:
-                return item
-        return None
+            if item.get("contentDetails", {}).get("boundStreamId") != stream_id:
+                continue
+            try:
+                scheduled = datetime.datetime.fromisoformat(item["snippet"]["scheduledStartTime"])
+            except (KeyError, ValueError):
+                continue
+            if scheduled <= now:
+                stale.append((scheduled, item))
+        stale.sort(key=lambda pair: pair[0], reverse=True)
+        return [item for _, item in stale]
+
+    def _delete_broadcast(self, broadcast_id: str):
+        try:
+            self._api_delete("liveBroadcasts", {"id": broadcast_id})
+            print(f"[youtube] Deleted stale broadcast {broadcast_id!r}", flush=True)
+        except Exception as exc:
+            print(f"[youtube] Could not delete broadcast {broadcast_id!r}: {exc}", flush=True)
 
     def _get_last_broadcast(self) -> dict | None:
         result = self._api_get("liveBroadcasts", {
@@ -335,19 +372,26 @@ class YouTubeManager(threading.Thread):
         if live_stream.get("status", {}).get("streamStatus") != "active":
             return False, "Stream not active — is RTMP pushing?"
 
-        # Reuse a broadcast left bound to our stream by an earlier attempt instead of creating another
-        existing = self._get_upcoming_broadcast_for_stream(stream_id)
-        if existing:
-            broadcast_id = existing["id"]
-            title = existing.get("snippet", {}).get("title", "Live Stream")
-            print(f"[youtube] Reusing upcoming broadcast {broadcast_id!r} ({title!r})", flush=True)
-        else:
-            last = self._get_last_broadcast()
-            broadcast_id = self._create_broadcast(last)
-            if not broadcast_id:
-                return False, "Failed to create broadcast"
-            title = (last or {}).get("snippet", {}).get("title", "Live Stream")
+        # Leftover broadcasts may be the only copy of the user's title/description/settings,
+        # so the newest one is the template; fall back to the last completed broadcast
+        stale = self._get_stale_broadcasts(stream_id)
+        template = stale[0] if stale else self._get_last_broadcast()
+        broadcast_id = self._create_broadcast(template)
+        if not broadcast_id:
+            return False, "Failed to create broadcast"
+        title = (template or {}).get("snippet", {}).get("title", "Live Stream")
+        try:
             self._bind_broadcast(broadcast_id, stream_id)
+        except Exception:
+            # Unbound, it wouldn't be picked up as a leftover later; leftovers are untouched so far
+            self._delete_broadcast(broadcast_id)
+            raise
+
+        # The new broadcast now holds the settings; old leftovers bound to the same stream can't be
+        # transitioned reliably, so clear them. From here on the new broadcast is never deleted —
+        # if this attempt fails, the next one uses it as its template and clears it instead.
+        for item in stale:
+            self._delete_broadcast(item["id"])
 
         # Wait up to 15s for the broadcast to reach ready state before transitioning
         bc_status = None
@@ -364,7 +408,10 @@ class YouTubeManager(threading.Thread):
         if bc_status == "live":
             print(f"[youtube] Broadcast {broadcast_id!r} already live ({title!r})", flush=True)
             return True, f"Broadcast already live: {title}"
-        self._transition_to_live(broadcast_id)
+        try:
+            self._transition_to_live(broadcast_id)
+        except RuntimeError as exc:
+            raise RuntimeError(f"{exc} (broadcast was {bc_status!r})") from exc
         print(f"[youtube] Restarted broadcast {broadcast_id!r} ({title!r})", flush=True)
         return True, f"Broadcast restarted: {title}"
 
