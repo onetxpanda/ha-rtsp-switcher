@@ -62,10 +62,16 @@ _YT_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _YT_DEVICE_URL = "https://oauth2.googleapis.com/device/code"
 _YT_API = "https://www.googleapis.com/youtube/v3"
 _YT_POLL_SEC = 60            # broadcast status poll (1 unit)
-_YT_HEALTH_POLL_SEC = 300    # stream health poll while live (1 unit)
+_YT_HEALTH_POLL_SEC = 60     # stream health poll while live (1 unit)
+_YT_FAST_POLL_SEC = 10       # poll interval while confirming a change we triggered
+_YT_FAST_POLL_WINDOW_SEC = 120
 _YT_DAILY_QUOTA_DEFAULT = 10000
 _YT_AUTO_RESTART_QUOTA_FRACTION = 0.9   # auto-restart stops at this share of the budget; manual still works
 _YT_RESTART_COST_ESTIMATE = 200
+
+
+def _utc_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _pacific_tz():
@@ -138,6 +144,8 @@ class YouTubeManager(threading.Thread):
         self._quota_paused_until: float = 0.0       # epoch time; set when the API reports quotaExceeded
         self._last_health_at: float = 0.0           # monotonic time of last stream health fetch
         self._last_health: dict = {}
+        self._fast_poll_until: float = 0.0          # monotonic; poll fast until then or until confirmed
+        self._expect_live: bool | None = None       # state we're waiting to see confirmed
         self._stopping = threading.Event()
         self._poll_now = threading.Event()
 
@@ -271,10 +279,12 @@ class YouTubeManager(threading.Thread):
             self._access_token = None
             self._token_expires_at = 0.0
             prev_live = self._status.get("live", False)
+            self._expect_live = None
+            self._fast_poll_until = 0.0
             self._status = {
-                "live": False, "broadcast_id": None, "title": None,
+                "live": False, "starting": False, "broadcast_id": None, "title": None,
                 "stream_health": None, "stream_issues": [],
-                "last_error": None, "started_at": None,
+                "last_error": None, "started_at": None, "checked_at": None,
                 "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if prev_live else self._status.get("ended_at"),
             }
 
@@ -454,13 +464,31 @@ class YouTubeManager(threading.Thread):
 
         if bc_status == "live":
             print(f"[youtube] Broadcast {broadcast_id!r} already live ({title!r})", flush=True)
+            self._mark_started(broadcast_id, title)
             return True, f"Broadcast already live: {title}"
         try:
             self._transition_to_live(broadcast_id)
         except RuntimeError as exc:
             raise RuntimeError(f"{exc} (broadcast was {bc_status!r})") from exc
         print(f"[youtube] Restarted broadcast {broadcast_id!r} ({title!r})", flush=True)
+        self._mark_started(broadcast_id, title)
         return True, f"Broadcast restarted: {title}"
+
+    def _mark_started(self, broadcast_id: str, title: str):
+        """We just transitioned this broadcast: report "starting" (not live — YouTube hasn't confirmed
+        yet) and poll fast until it does."""
+        with self._lock:
+            self._status = {
+                "live": False, "starting": True, "broadcast_id": broadcast_id, "title": title,
+                "stream_health": None, "stream_issues": [], "last_error": None,
+                "started_at": None, "ended_at": self._status.get("ended_at"),
+                "checked_at": self._status.get("checked_at"),
+            }
+            self._auto_restart_backoff = 0.0
+            self._auto_restart_retry_at = 0.0
+            self._expect_live = True
+            self._fast_poll_until = time.monotonic() + _YT_FAST_POLL_WINDOW_SEC
+        self._poll_now.set()  # restart the wait at the fast interval
 
     # ── Background poll ───────────────────────────────────────────────────────
 
@@ -480,8 +508,13 @@ class YouTubeManager(threading.Thread):
                 with self._lock:
                     self._auto_restart_backoff = 0.0
                     self._auto_restart_retry_at = 0.0
+                    if self._expect_live:
+                        self._expect_live = None
+                        self._fast_poll_until = 0.0
                     self._status = {
                         "live": True,
+                        "starting": False,
+                        "checked_at": _utc_iso(),
                         "broadcast_id": active.get("id"),
                         "title": snippet.get("title"),
                         "stream_health": health.get("status"),
@@ -492,12 +525,19 @@ class YouTubeManager(threading.Thread):
                     }
             else:
                 with self._lock:
+                    if self._expect_live and time.monotonic() < self._fast_poll_until:
+                        # YouTube can lag a few seconds behind a transition we just made; stay "starting"
+                        self._status["checked_at"] = _utc_iso()
+                        return
+                    timed_out = bool(self._expect_live)
+                    self._expect_live = None
                     prev_live = self._status.get("live", False)
-                    ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if prev_live else self._status.get("ended_at")
+                    ended_at = _utc_iso() if prev_live else self._status.get("ended_at")
                     self._status = {
-                        "live": False, "broadcast_id": None, "title": None,
+                        "live": False, "starting": False, "broadcast_id": None, "title": None,
                         "stream_health": None, "stream_issues": [],
-                        "last_error": None, "started_at": None, "ended_at": ended_at,
+                        "last_error": "Broadcast did not go live within 2 minutes of restarting" if timed_out else None,
+                        "started_at": None, "ended_at": ended_at, "checked_at": _utc_iso(),
                     }
                     auto = self._auto_restart and time.monotonic() >= self._auto_restart_retry_at
                 budget = int(_get_cfg().get("youtube_daily_quota", _YT_DAILY_QUOTA_DEFAULT))
@@ -527,8 +567,10 @@ class YouTubeManager(threading.Thread):
                     prev_live = self._status.get("live", False)
                     self._access_token = None
                     self._token_expires_at = 0.0
+                    self._expect_live = None
+                    self._fast_poll_until = 0.0
                     self._status.update({
-                        "live": False, "broadcast_id": None, "title": None,
+                        "live": False, "starting": False, "broadcast_id": None, "title": None,
                         "stream_health": None, "stream_issues": [],
                         "started_at": None,
                         "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if prev_live else self._status.get("ended_at"),
@@ -549,7 +591,10 @@ class YouTubeManager(threading.Thread):
             elif configured:
                 self._poll()
             self._poll_now.clear()
-            self._poll_now.wait(_YT_POLL_SEC)  # or wake early via force_poll() / stop()
+            with self._lock:
+                fast = time.monotonic() < self._fast_poll_until
+            # or wake early via force_poll() / stop()
+            self._poll_now.wait(_YT_FAST_POLL_SEC if fast else _YT_POLL_SEC)
 
     def stop(self):
         self._stopping.set()
@@ -769,22 +814,47 @@ function HealthWarn({ health, issues }) {
   );
 }
 
+// YouTube status is polled every 60s; past this age we can't vouch for it
+const YT_STALE_SEC = 150;
+function ytAgeSec(yt) {
+  if (!yt?.checked_at) return null;
+  return Math.floor((Date.now() - new Date(yt.checked_at)) / 1000);
+}
+function ytBadge(yt) {
+  if (yt?.starting) return { cls: 'idle', label: 'Starting\u2026' };
+  return yt?.live ? { cls: 'live', label: 'Live' } : { cls: 'idle', label: 'Idle' };
+}
+
 function YtStrip({ yt }) {
   const [, tick] = useState(0);
   useEffect(() => { const id = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(id); }, []);
   if (!yt?.configured) return <div className="yt-strip s-idle" />;
+  const age = ytAgeSec(yt);
+  const stale = age === null || age > YT_STALE_SEC;
+  if (stale && !yt.starting) {
+    return (
+      <div className="yt-strip s-warn">
+        <span className="yt-status-badge idle">Unknown</span>
+        <span className="yt-strip-time">{age === null ? 'YouTube status not checked yet' : `YouTube status last checked ${fmtElapsed(yt.checked_at)} ago`}</span>
+      </div>
+    );
+  }
   const live = yt.live;
+  const notSending = (live || yt.starting) && !yt.rtmp_sending;
   const health = yt.stream_health;
-  const hasError = live && (health === 'bad' || health === 'noData');
-  const hasWarn  = live && !hasError && health && health !== 'good' && health !== 'ok';
-  const stripCls = !live ? 's-idle' : hasError ? 's-error' : hasWarn ? 's-warn' : 's-live';
+  const hasError = notSending || (live && (health === 'bad' || health === 'noData'));
+  const hasWarn  = !hasError && (yt.starting || (live && health && health !== 'good' && health !== 'ok'));
+  const stripCls = !live && !yt.starting ? 's-idle' : hasError ? 's-error' : hasWarn ? 's-warn' : 's-live';
+  const badge = ytBadge(yt);
   return (
     <div className={`yt-strip ${stripCls}`}>
-      <span className={`yt-status-badge ${live ? 'live' : 'idle'}`}>{live ? 'Live' : 'Idle'}</span>
+      <span className={`yt-status-badge ${badge.cls}`}>{badge.label}</span>
       {live && yt.started_at && (
         <span className="yt-strip-time">Stream started {fmtElapsed(yt.started_at)} ago</span>
       )}
-      {live && <HealthWarn health={yt.stream_health} issues={yt.stream_issues} />}
+      {yt.starting && !notSending && <span className="yt-strip-time">Waiting for YouTube to confirm</span>}
+      {notSending && <span className="yt-health-err">Not sending video to YouTube</span>}
+      {live && !notSending && <HealthWarn health={yt.stream_health} issues={yt.stream_issues} />}
     </div>
   );
 }
@@ -1323,8 +1393,9 @@ function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
         <div className="card">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <h2 style={{ marginBottom: 0 }}>Broadcast Status</h2>
-            <span className={`yt-status-badge ${live ? 'live' : 'idle'}`}>{live ? 'Live' : 'Idle'}</span>
+            <span className={`yt-status-badge ${ytBadge(yt).cls}`}>{ytBadge(yt).label}</span>
           </div>
+          {configured && yt?.checked_at && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 6 }}>Checked with YouTube {fmtElapsed(yt.checked_at)} ago</div>}
           {yt?.title && <div style={{ fontSize: 14, color: 'var(--text)', marginBottom: 4 }}>{yt.title}</div>}
           {live && yt?.started_at && <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 4 }}>Started {fmtTime(yt.started_at)} &middot; {fmtElapsed(yt.started_at)}</div>}
           {!live && yt?.ended_at && <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 4 }}>Ended {fmtTime(yt.ended_at)}</div>}
@@ -1435,9 +1506,10 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // Local endpoint (no YouTube API cost) — poll often so the UI never trails the server's state
     const tick = () => fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {});
     tick();
-    const id = setInterval(tick, 15000);
+    const id = setInterval(tick, 3000);
     return () => clearInterval(id);
   }, []);
 
@@ -1607,6 +1679,7 @@ def _api_youtube_status():
     status = m.get_status() if m else {"live": False, "broadcast_id": None, "title": None, "stream_health": None}
     status["configured"] = configured
     status["auto_restart"] = cfg.get("youtube_auto_restart", False)
+    status["rtmp_sending"] = _manager_ref.output_active if _manager_ref else False
     status["quota_used"] = m.quota_used() if m else 0
     status["quota_budget"] = int(cfg.get("youtube_daily_quota", _YT_DAILY_QUOTA_DEFAULT))
     return jsonify(status)
@@ -1888,7 +1961,7 @@ def _video_loop(pipeline, video_queue):
             pass  # drop if queue full
 
 
-def pipeline_worker(stream: dict, cfg: dict, snapshot_queue, video_queue):
+def pipeline_worker(stream: dict, cfg: dict, snapshot_queue, video_queue, last_output_shared):
     """Runs in a child process. Owns GStreamer entirely."""
     import gi
     gi.require_version("Gst", "1.0")
@@ -1921,6 +1994,7 @@ def pipeline_worker(stream: dict, cfg: dict, snapshot_queue, video_queue):
         if pad:
             def on_output_probe(_pad, _info):
                 last_output_time[0] = time.monotonic()
+                last_output_shared.value = time.time()  # read by the main process for live UI status
                 return Gst.PadProbeReturn.OK
             pad.add_probe(Gst.PadProbeType.BUFFER, on_output_probe)
 
@@ -2102,6 +2176,13 @@ class PipelineManager(threading.Thread):
         self._snapshot_queue = snapshot_queue
         self._video_queue = video_queue
         self._pipeline_generation = 0
+        # Wall-clock time of the last encoded frame, written by the worker process
+        self._last_output = multiprocessing.Value("d", 0.0, lock=False)
+
+    @property
+    def output_active(self) -> bool:
+        """True if the pipeline produced output within the last few seconds (i.e. RTMP is being fed)."""
+        return time.time() - self._last_output.value < 3
 
     @property
     def pipeline_generation(self):
@@ -2182,7 +2263,7 @@ class PipelineManager(threading.Thread):
 
             p = multiprocessing.Process(
                 target=pipeline_worker,
-                args=(stream, cfg, self._snapshot_queue, self._video_queue),
+                args=(stream, cfg, self._snapshot_queue, self._video_queue, self._last_output),
                 name=f"pipeline-{stream_name}",
             )
             p.start()

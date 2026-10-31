@@ -1,3 +1,10 @@
+## 4.3.0
+- After a restart, the broadcast shows "Starting…" until YouTube actually confirms it is live (checked every 10s for up to 2 min, then back to 60s polling); if it never goes live, an error is shown instead
+- Status strip shows "Not sending video to YouTube" within seconds whenever the local pipeline stops producing output, without waiting for a YouTube API poll
+- YouTube status shows when it was last checked; if the last successful check is older than 2.5 min (e.g. quota pause, network errors) the strip shows "Unknown" instead of the stale state
+- UI refreshes addon status every 3s (was 15s); this endpoint is local and costs no API quota
+- Stream health is checked on every 60s poll again (was every 5 min in 4.2.0)
+
 ## 4.2.0
 - Cut YouTube API quota use: broadcast status is polled every 60s (was 30s) and stream health every 5 min (was every poll) — roughly 1,700 units/day while live, down from ~5,760
 - When YouTube reports the daily quota is exceeded, all YouTube API calls pause until the quota resets (midnight Pacific) instead of failing every poll
