@@ -7,6 +7,7 @@ import signal
 import sys
 import threading
 import time
+import zoneinfo
 
 import json
 import subprocess
@@ -60,6 +61,30 @@ def _get_cfg() -> dict:
 _YT_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _YT_DEVICE_URL = "https://oauth2.googleapis.com/device/code"
 _YT_API = "https://www.googleapis.com/youtube/v3"
+_YT_POLL_SEC = 60            # broadcast status poll (1 unit)
+_YT_HEALTH_POLL_SEC = 300    # stream health poll while live (1 unit)
+_YT_DAILY_QUOTA_DEFAULT = 10000
+_YT_AUTO_RESTART_QUOTA_FRACTION = 0.9   # auto-restart stops at this share of the budget; manual still works
+_YT_RESTART_COST_ESTIMATE = 200
+
+
+def _pacific_tz():
+    # YouTube API quota resets at midnight Pacific time
+    try:
+        return zoneinfo.ZoneInfo("America/Los_Angeles")
+    except Exception:
+        return datetime.timezone(datetime.timedelta(hours=-8))
+
+
+def _pacific_now() -> datetime.datetime:
+    return datetime.datetime.now(_pacific_tz())
+
+
+def _next_pacific_midnight() -> float:
+    now = _pacific_now()
+    tomorrow = (now + datetime.timedelta(days=1)).date()
+    midnight = datetime.datetime.combine(tomorrow, datetime.time(0, 5), tzinfo=now.tzinfo)
+    return midnight.timestamp()
 
 
 def _yt_request(req):
@@ -108,6 +133,11 @@ class YouTubeManager(threading.Thread):
         self._restart_lock = threading.Lock()
         self._auto_restart_backoff: float = 0.0     # seconds; 0 = no failures yet
         self._auto_restart_retry_at: float = 0.0    # monotonic time of next allowed auto-restart
+        self._quota_day = None                      # Pacific-time date the counter applies to
+        self._quota_used: int = 0                   # estimated units spent today (resets on addon restart)
+        self._quota_paused_until: float = 0.0       # epoch time; set when the API reports quotaExceeded
+        self._last_health_at: float = 0.0           # monotonic time of last stream health fetch
+        self._last_health: dict = {}
         self._stopping = threading.Event()
         self._poll_now = threading.Event()
 
@@ -144,67 +174,84 @@ class YouTubeManager(threading.Thread):
             return self._access_token
         return self._refresh_access_token()
 
+    # ── Quota ─────────────────────────────────────────────────────────────────
+
+    def _roll_quota_day(self):
+        """Caller holds self._lock. Reset the usage counter when the Pacific-time day changes."""
+        day = _pacific_now().date()
+        if day != self._quota_day:
+            self._quota_day = day
+            self._quota_used = 0
+
+    def quota_paused_until(self) -> float | None:
+        """Epoch time API calls are paused until (quota exhausted), or None."""
+        with self._lock:
+            if self._quota_paused_until and time.time() < self._quota_paused_until:
+                return self._quota_paused_until
+            return None
+
+    def quota_used(self) -> int:
+        with self._lock:
+            self._roll_quota_day()
+            return self._quota_used
+
+    def _spend_quota(self, units: int):
+        with self._lock:
+            if self._quota_paused_until and time.time() < self._quota_paused_until:
+                resume = time.strftime("%H:%M", time.localtime(self._quota_paused_until))
+                raise RuntimeError(f"YouTube API quota exhausted — paused until {resume}")
+            self._roll_quota_day()
+            self._quota_used += units
+
+    def _pause_for_quota(self):
+        with self._lock:
+            self._quota_paused_until = _next_pacific_midnight()
+            resume = time.strftime("%Y-%m-%d %H:%M", time.localtime(self._quota_paused_until))
+        print(f"[youtube] API quota exceeded — pausing all YouTube API calls until {resume}", flush=True)
+
     # ── API helpers ───────────────────────────────────────────────────────────
 
-    def _api_get(self, path: str, params: dict | None = None) -> dict:
+    def _api(self, method: str, path: str, params: dict | None = None,
+             body: dict | None = None, cost: int = 1) -> dict:
         token = self._get_token()
         if not token:
             raise RuntimeError("No access token — check OAuth credentials")
+        self._spend_quota(cost)
         url = f"{_YT_API}/{path}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        headers = {"Authorization": f"Bearer {token}"}
+        data = None
+        if method == "POST":
+            data = json.dumps(body or {}).encode()
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            return _yt_request(req)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = resp.read()
+            return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
-            body = exc.read()
+            raw = exc.read()
             try:
-                detail = json.loads(body).get("error", {}).get("message", body.decode())
+                err = json.loads(raw).get("error", {})
+                detail = err.get("message", raw.decode())
+                reasons = {e.get("reason") for e in err.get("errors", [])}
             except Exception:
-                detail = body.decode(errors="replace")
-            raise RuntimeError(f"GET {path}: {exc.code} {detail}") from exc
+                detail = raw.decode(errors="replace")
+                reasons = set()
+            if "quotaExceeded" in reasons or "dailyLimitExceeded" in reasons:
+                self._pause_for_quota()
+            raise RuntimeError(f"{method} {path}: {exc.code} {detail}") from exc
+
+    def _api_get(self, path: str, params: dict | None = None) -> dict:
+        return self._api("GET", path, params=params, cost=1)
 
     def _api_post(self, path: str, body: dict | None = None, params: dict | None = None) -> dict:
-        token = self._get_token()
-        if not token:
-            raise RuntimeError("No access token — check OAuth credentials")
-        url = f"{_YT_API}/{path}"
-        if params:
-            url += "?" + urllib.parse.urlencode(params)
-        payload = json.dumps(body or {}).encode()
-        req = urllib.request.Request(
-            url, data=payload,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            return _yt_request(req)
-        except urllib.error.HTTPError as exc:
-            body_bytes = exc.read()
-            try:
-                detail = json.loads(body_bytes).get("error", {}).get("message", body_bytes.decode())
-            except Exception:
-                detail = body_bytes.decode(errors="replace")
-            raise RuntimeError(f"POST {path}: {exc.code} {detail}") from exc
+        # insert, bind and transition each cost 50 units
+        return self._api("POST", path, params=params, body=body, cost=50)
 
     def _api_delete(self, path: str, params: dict | None = None):
-        token = self._get_token()
-        if not token:
-            raise RuntimeError("No access token — check OAuth credentials")
-        url = f"{_YT_API}/{path}"
-        if params:
-            url += "?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method="DELETE")
-        try:
-            with urllib.request.urlopen(req, timeout=15):
-                pass  # 204 No Content
-        except urllib.error.HTTPError as exc:
-            body_bytes = exc.read()
-            try:
-                detail = json.loads(body_bytes).get("error", {}).get("message", body_bytes.decode())
-            except Exception:
-                detail = body_bytes.decode(errors="replace")
-            raise RuntimeError(f"DELETE {path}: {exc.code} {detail}") from exc
+        self._api("DELETE", path, params=params, cost=50)
 
     # ── Public accessors ──────────────────────────────────────────────────────
 
@@ -423,7 +470,13 @@ class YouTubeManager(threading.Thread):
             if active:
                 snippet = active.get("snippet", {})
                 stream_id = active.get("contentDetails", {}).get("boundStreamId")
-                health = self._get_stream_health(stream_id) if stream_id else {}
+                # Health is informational only; refresh it less often than the live check to save quota
+                now = time.monotonic()
+                if stream_id and (stream_id != self._last_health.get("_stream_id")
+                                  or now - self._last_health_at >= _YT_HEALTH_POLL_SEC):
+                    self._last_health = {**self._get_stream_health(stream_id), "_stream_id": stream_id}
+                    self._last_health_at = now
+                health = self._last_health if stream_id else {}
                 with self._lock:
                     self._auto_restart_backoff = 0.0
                     self._auto_restart_retry_at = 0.0
@@ -447,6 +500,10 @@ class YouTubeManager(threading.Thread):
                         "last_error": None, "started_at": None, "ended_at": ended_at,
                     }
                     auto = self._auto_restart and time.monotonic() >= self._auto_restart_retry_at
+                budget = int(_get_cfg().get("youtube_daily_quota", _YT_DAILY_QUOTA_DEFAULT))
+                if auto and self.quota_used() + _YT_RESTART_COST_ESTIMATE > budget * _YT_AUTO_RESTART_QUOTA_FRACTION:
+                    print(f"[youtube] Skipping auto-restart: ~{self.quota_used()} of {budget} quota units used today", flush=True)
+                    auto = False
                 if auto:
                     print("[youtube] Broadcast not live, auto-restarting...", flush=True)
                     ok, msg = self.restart_broadcast()
@@ -483,10 +540,16 @@ class YouTubeManager(threading.Thread):
     def run(self):
         while not self._stopping.is_set():
             cfg = _get_cfg()
-            if cfg.get("youtube_refresh_token") and cfg.get("youtube_client_id") and cfg.get("youtube_client_secret"):
+            configured = cfg.get("youtube_refresh_token") and cfg.get("youtube_client_id") and cfg.get("youtube_client_secret")
+            paused = self.quota_paused_until()
+            if configured and paused:
+                with self._lock:
+                    resume = time.strftime("%H:%M", time.localtime(paused))
+                    self._status["last_error"] = f"YouTube API quota exhausted — paused until {resume}"
+            elif configured:
                 self._poll()
             self._poll_now.clear()
-            self._poll_now.wait(30)  # sleep 30s or wake early via force_poll() / stop()
+            self._poll_now.wait(_YT_POLL_SEC)  # or wake early via force_poll() / stop()
 
     def stop(self):
         self._stopping.set()
@@ -1283,6 +1346,7 @@ function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
             <button className="btn btn-ghost" onClick={doRefresh}>Refresh</button>
           </div>
           {yt?.last_error && <div style={{ fontSize: 13, color: 'var(--danger)', marginTop: 8, wordBreak: 'break-word' }}>{yt.last_error}</div>}
+          {configured && yt?.quota_budget > 0 && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>API quota used today: ~{yt.quota_used} / {yt.quota_budget} units (estimate, resets midnight Pacific)</div>}
           <div className="toggle-row" style={{ marginTop: 14 }}>
             <span style={{ fontSize: 14, color: 'var(--text)' }}>Auto-restart when broadcast stops</span>
             <label className="toggle">
@@ -1543,6 +1607,8 @@ def _api_youtube_status():
     status = m.get_status() if m else {"live": False, "broadcast_id": None, "title": None, "stream_health": None}
     status["configured"] = configured
     status["auto_restart"] = cfg.get("youtube_auto_restart", False)
+    status["quota_used"] = m.quota_used() if m else 0
+    status["quota_budget"] = int(cfg.get("youtube_daily_quota", _YT_DAILY_QUOTA_DEFAULT))
     return jsonify(status)
 
 

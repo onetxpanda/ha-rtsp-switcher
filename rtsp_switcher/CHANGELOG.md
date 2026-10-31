@@ -1,3 +1,9 @@
+## 4.2.0
+- Cut YouTube API quota use: broadcast status is polled every 60s (was 30s) and stream health every 5 min (was every poll) — roughly 1,700 units/day while live, down from ~5,760
+- When YouTube reports the daily quota is exceeded, all YouTube API calls pause until the quota resets (midnight Pacific) instead of failing every poll
+- Track estimated quota used today and show it in the YouTube tab; auto-restart is skipped once 90% of the daily budget is used, leaving room for manual restarts (budget defaults to 10,000; override with `youtube_daily_quota` in settings.yaml)
+- Add tzdata to the image so the quota reset time follows Pacific daylight saving
+
 ## 4.1.8
 - Fix auto-restart failing with "Invalid transition" when reusing a leftover broadcast: always create a fresh broadcast instead
 - The new broadcast copies its title, description and settings from the newest leftover upcoming broadcast bound to the stream (falling back to the last completed broadcast), so settings are kept even when no completed broadcast exists
