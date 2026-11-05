@@ -10,7 +10,7 @@ const BASE = window.INGRESS_PATH || '';
 const conn = { failures: 0, lastOkAt: Date.now(), listeners: new Set() };
 function noteConn(ok) {
   // A hidden page's requests can be throttled or cut off by the browser: not a lost addon
-  if (!ok && document.hidden) return;
+  if (!ok && pageVis.hidden) return;
   const wasLost = conn.failures >= 2;
   if (ok) { conn.failures = 0; conn.lastOkAt = Date.now(); } else conn.failures++;
   if (wasLost !== (conn.failures >= 2)) conn.listeners.forEach(fn => fn());
@@ -35,9 +35,20 @@ function useConnectionLost() {
 // ── Page visibility ───────────────────────────────────────────────────────────
 // Polling pauses while the page is hidden (background tab, screen off, app minimised). On return,
 // every poll runs at once and the page is shown as "last known state" until all have answered.
-const pageVis = { hidden: document.hidden, resuming: new Set(), listeners: new Set() };
+// Starts as visible regardless of document.hidden: some embedded browsers (the HA Companion app's
+// WebView) report the page hidden at load and only correct it later, which left the page blank until
+// tapped. Only an actual change to hidden pauses polling; focus or any interaction counts as visible.
+const pageVis = { hidden: false, resuming: new Set(), listeners: new Set() };
 const notifyPage = () => pageVis.listeners.forEach(fn => fn());
-document.addEventListener('visibilitychange', () => { pageVis.hidden = document.hidden; notifyPage(); });
+function setPageHidden(hidden) {
+  if (pageVis.hidden === hidden) return;
+  pageVis.hidden = hidden;
+  notifyPage();
+}
+document.addEventListener('visibilitychange', () => setPageHidden(document.hidden));
+for (const ev of ['focus', 'pageshow', 'pointerdown', 'keydown']) {
+  window.addEventListener(ev, () => setPageHidden(false), true);
+}
 function usePageState() {
   const [, rerender] = useState(0);
   useEffect(() => {

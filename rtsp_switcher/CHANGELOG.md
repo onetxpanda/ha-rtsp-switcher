@@ -1,3 +1,6 @@
+## 4.4.1
+- Fix the page staying blank ("Loading…", empty status bar) in the Home Assistant Companion app until tapped: its WebView can report the page as hidden when it loads, which paused all updates. The page now always loads on open, and only pauses after the browser actually reports it went hidden; focus or any tap counts as visible
+
 ## 4.4.0
 - Web UI is now bundled into the addon image (React and the UI code compiled at build time) instead of loading React and the Babel compiler from unpkg.com on every page load: works without internet, loads much faster (~180 KB instead of 3 MB+), and can't change unless the addon is updated
 - The addon's web server only accepts requests from Home Assistant's ingress proxy, and the HA token, YouTube client secret and refresh token are never sent to the browser (secret fields show "Saved — type to replace"; leaving them blank keeps the saved value)
