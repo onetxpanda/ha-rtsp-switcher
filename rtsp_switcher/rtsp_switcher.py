@@ -18,7 +18,7 @@ import urllib.request
 import queue as _queue_mod
 
 import yaml
-from flask import Flask, Response, abort, jsonify, request
+from flask import Flask, Response, abort, jsonify, request, send_file
 from flask_sock import Sock as _Sock
 from homeassistant_api import WebsocketClient
 
@@ -494,13 +494,13 @@ class YouTubeManager(threading.Thread):
             self._transition(broadcast_id, "live")
         except RuntimeError as exc:
             raise RuntimeError(f"{exc} (transition to live; broadcast was {status!r})") from exc
-        print(f"[youtube] Restarted broadcast {broadcast_id!r} ({title!r})", flush=True)
+        print(f"[youtube] Sent go-live for broadcast {broadcast_id!r} ({title!r}) — waiting for YouTube to confirm", flush=True)
         self._mark_started(broadcast_id, title)
 
         # Only now, with a broadcast live, clear older leftovers (capped — each delete costs 50 units)
         for other in stale[1:6]:
             self._delete_broadcast(other["id"])
-        return True, f"Broadcast restarted: {title}"
+        return True, f"Sent to YouTube — waiting for it to go live: {title}"
 
     def _mark_started(self, broadcast_id: str, title: str):
         """We just transitioned this broadcast: report "starting" (not live — YouTube hasn't confirmed
@@ -639,6 +639,8 @@ class YouTubeManager(threading.Thread):
 
 _snapshot_lock = threading.Lock()
 _latest_snapshot: bytes | None = None
+_snapshot_gen: int = 0                 # pipeline generation the snapshot came from
+_snapshot_captured_at: float = 0.0     # epoch time it was captured
 
 _video_clients_lock = threading.Lock()
 _video_clients: list = []
@@ -648,961 +650,74 @@ _video_clients: list = []
 # Web UI
 # ---------------------------------------------------------------------------
 
-_WEBUI_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RTSP Switcher</title>
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<!--INGRESS_PATH-->
-<script>
-(function(){
-  if (!window.EMBED_MODE) return;
-  document.documentElement.classList.add('embed');
-  try {
-    if (window.parent === window) return;
-    var s = window.parent.getComputedStyle(window.parent.document.documentElement);
-    var g = function(n) { return s.getPropertyValue(n).trim(); };
-    var r = document.documentElement;
-    [['--bg',      g('--primary-background-color') || g('--lovelace-background')],
-     ['--surface', g('--card-background-color') || g('--ha-card-background') || g('--secondary-background-color')],
-     ['--surface2',g('--secondary-background-color')],
-     ['--border',  g('--divider-color')],
-     ['--text',    g('--primary-text-color')],
-     ['--muted',   g('--secondary-text-color') || g('--disabled-text-color')],
-     ['--accent',  g('--primary-color')],
-     ['--danger',  g('--error-color')],
-     ['--success', g('--success-color')]
-    ].forEach(function(p) { if (p[1]) r.style.setProperty(p[0], p[1]); });
-    var bgV = g('--primary-background-color') || g('--lovelace-background');
-    if (isLight(bgV)) r.classList.add('light');
-  } catch(_) {
-    if (window.matchMedia('(prefers-color-scheme: light)').matches)
-      document.documentElement.classList.add('light');
-  }
-  function isLight(v) {
-    var m = (v||'').match(/rgb[a]?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)/);
-    if (!m) { m = (v||'').match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
-      if (m) m = [0, parseInt(m[1],16), parseInt(m[2],16), parseInt(m[3],16)]; }
-    if (!m) return false;
-    return (0.2126*m[1] + 0.7152*m[2] + 0.0722*m[3]) / 255 > 0.5;
-  }
-})();
-</script>
-<style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-:root {
-  --bg: #0f1117; --surface: #181b26; --surface2: #1e2130; --border: #272b3d;
-  --text: #dde1f0; --muted: #6b6f8a; --accent: #5b8cf8; --danger: #e05555; --success: #3ecf8e;
-}
-html, body { height: 100%; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 15px; background: var(--bg); color: var(--text); overflow: hidden; }
-#root { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-.tabbar { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
-.tab { padding: 14px 22px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .12s; display: flex; align-items: center; }
-.tab:hover { color: var(--text); }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-.tab svg { display: block; }
-.yt-strip { display: flex; align-items: center; gap: 10px; padding: 7px 14px; border-bottom: 1px solid transparent; flex-shrink: 0; min-height: 36px; transition: background .3s, border-color .3s; }
-.yt-strip.s-idle    { background: var(--surface); border-color: var(--border); }
-.yt-strip.s-live    { background: rgba(62,207,142,.22); border-color: rgba(62,207,142,.55); }
-.yt-strip.s-warn    { background: rgba(245,166,35,.22); border-color: rgba(245,166,35,.55); }
-.yt-strip.s-error   { background: rgba(224,85,85,.22);  border-color: rgba(224,85,85,.55); }
-.yt-strip-time { font-size: 12px; color: #fff; }
-.yt-health-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: #f5a623; }
-.yt-health-err  { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--danger); }
-.issue-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-.issue-row { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 6px; font-size: 13px; }
-.issue-row.warning { background: rgba(245,166,35,.08); border: 1px solid rgba(245,166,35,.25); color: #f5a623; }
-.issue-row.error   { background: rgba(224,85,85,.08);  border: 1px solid rgba(224,85,85,.25);  color: var(--danger); }
-.issue-reason { color: var(--text); font-size: 13px; }
-.content { flex: 1; min-height: 0; overflow-y: auto; }
-.snapshot-outer { width: 100%; aspect-ratio: 16/9; background: #000; position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.snapshot-outer img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.snapshot-outer canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
-.snapshot-placeholder { color: var(--muted); font-size: 14px; position: absolute; }
-.snapshot-loading { position: absolute; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.snapshot-spinner { width: 32px; height: 32px; border: 3px solid rgba(255,255,255,.15); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
-.camera-section { padding: 12px 16px 20px; }
-.camera-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-.camera-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; transition: background .12s, border-color .12s; user-select: none; }
-.camera-row:hover { background: var(--surface2); }
-.camera-row.active { background: rgba(62,207,142,.18); border-color: rgba(62,207,142,.5); }
-.camera-name { font-size: 14px; font-weight: 500; color: var(--text); flex: 1; }
-.live-dot { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--success); white-space: nowrap; }
-.live-dot::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: block; }
-.cam-actions { display: flex; gap: 6px; flex-shrink: 0; }
-.settings-content { padding: 20px 16px; }
-h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 12px; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 14px; }
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.field { display: flex; flex-direction: column; gap: 5px; }
-.field-full { grid-column: 1 / -1; }
-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-input, select { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; color: var(--text); font-size: 14px; outline: none; width: 100%; transition: border-color .12s; }
-input:focus, select:focus { border-color: var(--accent); }
-input[type="password"] { font-family: monospace; }
-.btn { display: inline-flex; align-items: center; gap: 5px; padding: 9px 16px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; border: none; outline: none; transition: filter .12s; white-space: nowrap; }
-.btn:hover { filter: brightness(1.12); }
-.btn:active { filter: brightness(.9); }
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-danger { background: transparent; color: var(--danger); border: 1px solid rgba(224,85,85,.35); }
-.btn-danger:hover { background: rgba(224,85,85,.1); filter: none; }
-.btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
-.btn-add { width: 100%; padding: 10px; background: transparent; border: 1px dashed var(--border); color: var(--muted); border-radius: 8px; font-size: 14px; cursor: pointer; transition: border-color .12s, color .12s; }
-.btn-add:hover { border-color: var(--accent); color: var(--accent); }
-.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 22px; width: 480px; max-width: 95vw; }
-.modal-title { font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 18px; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-.toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; border-radius: 8px; font-size: 14px; font-weight: 500; z-index: 200; border: 1px solid; }
-.toast-ok { background: rgba(62,207,142,.1); border-color: rgba(62,207,142,.3); color: var(--success); }
-.toast-err { background: rgba(224,85,85,.1); border-color: rgba(224,85,85,.3); color: var(--danger); }
-.yt-status-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 20px; }
-.yt-status-badge.live { background: rgba(62,207,142,.12); color: var(--success); border: 1px solid rgba(62,207,142,.3); }
-.yt-status-badge.idle { background: rgba(107,111,138,.12); color: var(--muted); border: 1px solid var(--border); }
-.yt-status-badge.live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: block; }
-.yt-auth-code { font-family: monospace; font-size: 23px; font-weight: 700; letter-spacing: .12em; color: #fff; padding: 10px 0 4px; }
-.yt-auth-url { font-size: 13px; color: var(--muted); word-break: break-all; }
-.toggle-row { display: flex; align-items: center; justify-content: space-between; }
-.toggle { position: relative; width: 38px; height: 22px; flex-shrink: 0; }
-.toggle input { opacity: 0; width: 0; height: 0; }
-.toggle-slider { position: absolute; inset: 0; background: var(--border); border-radius: 22px; transition: background .15s; cursor: pointer; }
-.toggle-slider::before { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform .15s; }
-.toggle input:checked + .toggle-slider { background: var(--accent); }
-.toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
-html.embed .tabbar { display: none; }
-html.embed .cam-actions { display: none; }
-html.embed .btn-add { display: none; }
-html.embed body, html.embed .content { overflow: hidden; }
-html.embed.light .yt-strip-time { color: #000; }
-html.embed.light .yt-strip.s-live { background: color-mix(in srgb, var(--accent) 15%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
-html.embed.light .camera-row.active { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
-</style>
-</head>
-<body>
-<div id="root"></div>
-<script type="text/babel">
-const { useState, useEffect, useCallback } = React;
-const BASE = window.INGRESS_PATH || '';
-
-// ── Icons ─────────────────────────────────────────────────────────────────────
-const IconCamera = () => (
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
-    <circle cx="12" cy="13" r="3"/>
-  </svg>
-);
-const IconSettings = () => (
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="3"/>
-    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-  </svg>
-);
-const IconYouTube = () => (
-  <svg width="24" height="22" viewBox="0 0 24 24">
-    <path fill="#FF0000" d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31.6 31.6 0 0 0 0 12a31.6 31.6 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1C4.5 20.4 12 20.4 12 20.4s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31.6 31.6 0 0 0 24 12a31.6 31.6 0 0 0-.5-5.8z"/>
-    <polygon fill="#fff" points="9.6,15.6 15.8,12 9.6,8.4"/>
-  </svg>
-);
-
-// ── Time formatting ───────────────────────────────────────────────────────────
-function fmtTime(iso) {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (isNaN(d)) return null;
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-function fmtElapsed(iso) {
-  if (!iso) return null;
-  const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
-  if (diff < 60) return `${diff}s`;
-  const s = diff % 60;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ${s}s`;
-  const h = Math.floor(diff / 3600), m = Math.floor((diff % 3600) / 60);
-  if (diff < 86400) return `${h}h ${m}m ${s}s`;
-  const d = Math.floor(diff / 86400), rh = Math.floor((diff % 86400) / 3600), rm = Math.floor((diff % 3600) / 60);
-  return `${d}d ${rh}h ${rm}m ${s}s`;
-}
-
-// ── YouTube status strip ──────────────────────────────────────────────────────
-function HealthWarn({ health, issues }) {
-  if (!health || health === 'good' || health === 'ok') return null;
-  const isErr = health === 'bad' || health === 'noData';
-  const cls = isErr ? 'yt-health-err' : 'yt-health-warn';
-  const label = health === 'noData' ? 'No stream data' : `Stream ${health}`;
-  const errorCount = (issues || []).filter(i => i.severity === 'error').length;
-  const warnCount  = (issues || []).filter(i => i.severity === 'warning').length;
-  const detail = [errorCount && `${errorCount} error${errorCount > 1 ? 's' : ''}`, warnCount && `${warnCount} warning${warnCount > 1 ? 's' : ''}`].filter(Boolean).join(', ');
-  return (
-    <span className={cls}>
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm0 3.5L20.5 19h-17L12 5.5zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>
-      {label}{detail ? ` · ${detail}` : ''}
-    </span>
-  );
-}
-
-// Past 2.5 poll intervals without a successful check we can't vouch for the YouTube status
-const ytStaleSec = (yt) => 2.5 * (yt?.poll_interval_sec || 60);
-function ytAgeSec(yt) {
-  if (!yt?.checked_at) return null;
-  return Math.floor((Date.now() - new Date(yt.checked_at)) / 1000);
-}
-function ytBadge(yt) {
-  if (yt?.starting) return { cls: 'idle', label: 'Starting\u2026' };
-  return yt?.live ? { cls: 'live', label: 'Live' } : { cls: 'idle', label: 'Idle' };
-}
-
-function YtStrip({ yt }) {
-  const [, tick] = useState(0);
-  useEffect(() => { const id = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(id); }, []);
-  if (!yt?.configured) return <div className="yt-strip s-idle" />;
-  const age = ytAgeSec(yt);
-  const stale = age === null || age > ytStaleSec(yt);
-  if (stale && !yt.starting) {
-    return (
-      <div className="yt-strip s-warn">
-        <span className="yt-status-badge idle">Unknown</span>
-        <span className="yt-strip-time">{age === null ? 'YouTube status not checked yet' : `YouTube status last checked ${fmtElapsed(yt.checked_at)} ago`}</span>
-      </div>
-    );
-  }
-  const live = yt.live;
-  const notSending = (live || yt.starting) && !yt.rtmp_sending;
-  const health = yt.stream_health;
-  const hasError = notSending || (live && (health === 'bad' || health === 'noData'));
-  const hasWarn  = !hasError && (yt.starting || (live && health && health !== 'good' && health !== 'ok'));
-  const stripCls = !live && !yt.starting ? 's-idle' : hasError ? 's-error' : hasWarn ? 's-warn' : 's-live';
-  const badge = ytBadge(yt);
-  return (
-    <div className={`yt-strip ${stripCls}`}>
-      <span className={`yt-status-badge ${badge.cls}`}>{badge.label}</span>
-      {live && yt.started_at && (
-        <span className="yt-strip-time">Stream started {fmtElapsed(yt.started_at)} ago</span>
-      )}
-      {yt.starting && !notSending && <span className="yt-strip-time">Waiting for YouTube to confirm</span>}
-      {notSending && <span className="yt-health-err">Not sending video to YouTube</span>}
-      {live && !notSending && <HealthWarn health={yt.stream_health} issues={yt.stream_issues} />}
-    </div>
-  );
-}
-
-// ── Toast ─────────────────────────────────────────────────────────────────────
-function Toast({ toast }) {
-  if (!toast) return null;
-  return <div className={`toast ${toast.ok ? 'toast-ok' : 'toast-err'}`}>{toast.msg}</div>;
-}
-
-// ── Snapshot ──────────────────────────────────────────────────────────────────
-function Snapshot({ ts, loading, onFirstLoad }) {
-  const [ok, setOk] = useState(false);
-  const onLoad = () => { setOk(true); if (loading) onFirstLoad(); };
-  return (
-    <div className="snapshot-outer">
-      <img
-        src={`${BASE}/api/snapshot?t=${ts}`}
-        style={{ display: ok ? 'block' : 'none' }}
-        onLoad={onLoad}
-        onError={() => setOk(false)}
-        alt=""
-      />
-      {!ok && !loading && <span className="snapshot-placeholder">No snapshot available</span>}
-      {loading && <div className="snapshot-loading"><div className="snapshot-spinner" /></div>}
-    </div>
-  );
-}
-
-// ── VideoPreview (WebCodecs + WebSocket, falls back to Snapshot) ──────────────
-function parseSpsCodecString(bytes) {
-  for (let i = 0; i < bytes.length - 8; i++) {
-    if (bytes[i]===0 && bytes[i+1]===0 && bytes[i+2]===0 && bytes[i+3]===1) {
-      if ((bytes[i+4] & 0x1f) === 7) { // NAL type 7 = SPS
-        const p = bytes[i+5].toString(16).padStart(2,'0');
-        const c = bytes[i+6].toString(16).padStart(2,'0');
-        const l = bytes[i+7].toString(16).padStart(2,'0');
-        return `avc1.${p}${c}${l}`;
-      }
-    }
-  }
-  return 'avc1.42E01E'; // fallback
-}
-
-function VideoPreview({ ts, loading, onFirstLoad, pipelineGeneration }) {
-  const canvasRef = React.useRef(null);
-  // mode: 'connecting' | 'video' | 'fallback'
-  const [mode, setMode] = React.useState('connecting');
-  const [statusMsg, setStatusMsg] = React.useState('Connecting\u2026');
-  const modeRef = React.useRef('connecting');
-  // pipelineGenRef must be declared before the useEffect that uses it
-  const pipelineGenRef = React.useRef(pipelineGeneration);
-
-  useEffect(() => { pipelineGenRef.current = pipelineGeneration; }, [pipelineGeneration]);
-
-  const supportsWebCodecs = typeof VideoDecoder !== 'undefined';
-
-  useEffect(() => {
-    if (!supportsWebCodecs) {
-      const reason = !window.isSecureContext
-        ? 'WebCodecs requires HTTPS or localhost — current page is not a secure context'
-        : 'VideoDecoder API not available in this browser';
-      console.warn('[VideoPreview]', reason);
-      setMode('fallback');
-      setStatusMsg(reason);
-      return;
-    }
-
-    const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProto}//${location.host}${BASE}/ws/video`;
-    console.log('[VideoPreview] connecting to', wsUrl);
-
-    let closed = false;
-    let decoder = null;
-    let needsReset = true;
-    let lastGen = pipelineGenRef.current;
-    let localTs = 0; // monotonic fallback timestamp (µs)
-
-    function makeDecoder(codecStr) {
-      if (decoder && decoder.state !== 'closed') { try { decoder.close(); } catch(_) {} }
-      console.log('[VideoPreview] configuring decoder, codec:', codecStr);
-      decoder = new VideoDecoder({
-        output: (frame) => {
-          const canvas = canvasRef.current;
-          if (canvas) canvas.getContext('2d').drawImage(frame, 0, 0, canvas.width, canvas.height);
-          frame.close();
-          if (modeRef.current !== 'video') { modeRef.current = 'video'; setMode('video'); }
-          if (loading) onFirstLoad();
-        },
-        error: (e) => {
-          console.warn('[VideoPreview] decoder error:', e);
-          needsReset = true;
-        },
-      });
-      decoder.configure({ codec: codecStr, optimizeForLatency: true });
-    }
-
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = 'arraybuffer';
-
-    ws.onopen = () => {
-      console.log('[VideoPreview] WebSocket open');
-      needsReset = true;
-      setStatusMsg('Waiting for keyframe\u2026');
-    };
-
-    ws.onmessage = (evt) => {
-      if (!(evt.data instanceof ArrayBuffer) || evt.data.byteLength < 9) return;
-      const view = new DataView(evt.data);
-      const isKeyframe = view.getUint8(0) === 1;
-      const ptsBigInt = view.getBigUint64(1, false);
-      // Use GStreamer PTS if non-zero, otherwise a local monotonic counter
-      const ptsUs = Number(ptsBigInt);
-      const timestamp = ptsUs > 0 ? ptsUs : localTs;
-      localTs += 33333; // ~30fps fallback increment
-      const h264 = new Uint8Array(evt.data, 9);
-
-      // Detect pipeline generation change → need decoder reset
-      const curGen = pipelineGenRef.current;
-      if (curGen !== null && lastGen !== null && curGen !== lastGen) {
-        console.log('[VideoPreview] pipeline generation changed, waiting for next keyframe');
-        needsReset = true;
-      }
-      lastGen = curGen;
-
-      if (needsReset) {
-        if (!isKeyframe) return; // wait for IDR before decoding anything
-        needsReset = false;
-        const codecStr = parseSpsCodecString(h264);
-        makeDecoder(codecStr);
-        // fall through and decode this IDR frame immediately
-      }
-
-      if (!decoder || decoder.state !== 'configured') return;
-      try {
-        decoder.decode(new EncodedVideoChunk({ type: isKeyframe ? 'key' : 'delta', timestamp, data: h264 }));
-      } catch(e) {
-        console.warn('[VideoPreview] decode error:', e);
-        needsReset = true;
-      }
-    };
-
-    ws.onerror = (e) => {
-      console.warn('[VideoPreview] WebSocket error', e);
-      if (!closed) { setMode('fallback'); setStatusMsg('WebSocket error \u2014 showing snapshots'); }
-    };
-    ws.onclose = (e) => {
-      console.log('[VideoPreview] WebSocket closed, code:', e.code, e.reason);
-      if (!closed) { setMode('fallback'); setStatusMsg(`WebSocket closed (${e.code}) \u2014 showing snapshots`); }
-    };
-
-    return () => {
-      closed = true;
-      ws.close();
-      if (decoder && decoder.state !== 'closed') { try { decoder.close(); } catch(_) {} }
-    };
-  }, []);
-
-  if (mode === 'fallback') {
-    return (
-      <div>
-        <Snapshot ts={ts} loading={loading} onFirstLoad={onFirstLoad} />
-        <div style={{ padding: '4px 12px', fontSize: 11, color: 'var(--muted)', background: 'var(--surface2)' }}>{statusMsg}</div>
-      </div>
-    );
-  }
-  return (
-    <div>
-      <div className="snapshot-outer">
-        <canvas ref={canvasRef} width={1920} height={1080}
-          style={{ display: mode === 'video' ? 'block' : 'none' }} />
-        {mode === 'connecting' && !loading && (
-          <span className="snapshot-placeholder">{statusMsg}</span>
-        )}
-        {(mode === 'connecting' || loading) && (
-          <div className="snapshot-loading"><div className="snapshot-spinner" /></div>
-        )}
-      </div>
-      <div style={{ padding: '4px 12px', fontSize: 11, color: mode === 'video' ? 'var(--success)' : 'var(--muted)', background: 'var(--surface2)' }}>
-        {mode === 'video' ? '\u25cf Live video' : statusMsg}
-      </div>
-    </div>
-  );
-}
-
-// ── Camera modal ──────────────────────────────────────────────────────────────
-function CameraModal({ initial, onSave, onClose }) {
-  const isEdit = !!initial;
-  const [name, setName] = useState(initial?.stream_name || '');
-  const [url, setUrl] = useState(initial?.stream_url || '');
-  const [detected, setDetected] = useState(
-    initial ? { width: initial.stream_width, height: initial.stream_height, framerate: initial.stream_framerate, codec: initial.stream_codec } : null
-  );
-  const [detecting, setDetecting] = useState(false);
-  const [detectError, setDetectError] = useState(null);
-
-  const probe = async (probeUrl) => {
-    const u = (probeUrl ?? url).trim();
-    if (!u) { setDetectError('Enter an RTSP URL first'); return null; }
-    setDetecting(true);
-    setDetectError(null);
-    setDetected(null);
-    try {
-      const r = await fetch(`${BASE}/api/probe`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: u }) });
-      const d = await r.json();
-      if (d.error) { setDetectError(d.error); setDetecting(false); return null; }
-      setDetected(d);
-      setDetecting(false);
-      return d;
-    } catch { setDetectError('Could not reach server'); setDetecting(false); return null; }
-  };
-
-  const handleSave = async () => {
-    if (!name.trim() || !url.trim()) return;
-    let det = detected;
-    if (!det) {
-      det = await probe(url);
-      if (!det) return;
-    }
-    onSave({ stream_name: name.trim(), stream_url: url.trim(), stream_width: det.width, stream_height: det.height, stream_framerate: det.framerate, stream_codec: det.codec });
-  };
-
-  const codecLabel = detected ? (detected.codec === 'h265' ? 'H.265' : 'H.264') : null;
-
-  return (
-    <div className="modal-bg" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-title">{isEdit ? 'Edit Camera' : 'Add Camera'}</div>
-        <div className="form-grid">
-          <div className="field field-full">
-            <label>Name</label>
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="Inside Box" />
-          </div>
-          <div className="field field-full">
-            <label>RTSP URL</label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input value={url} onChange={e => { setUrl(e.target.value); setDetected(null); setDetectError(null); }} placeholder="rtsp://192.168.1.x:8554/stream" style={{ flex: 1 }} />
-              {isEdit && (
-                <button className="btn btn-ghost" onClick={() => probe(url)} disabled={detecting} title="Re-detect stream info" style={{ flexShrink: 0 }}>
-                  {detecting ? '\u2026' : '\u21bb'}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-        <div style={{ marginTop: 14, minHeight: 32, display: 'flex', alignItems: 'center' }}>
-          {detecting && <span style={{ fontSize: 13, color: 'var(--muted)' }}>Detecting stream\u2026</span>}
-          {!detecting && detected && (
-            <span style={{ fontSize: 13, color: 'var(--success)' }}>
-              {detected.width}\u00d7{detected.height} \u00b7 {codecLabel} \u00b7 {detected.framerate}fps
-            </span>
-          )}
-          {!detecting && detectError && <span style={{ fontSize: 13, color: 'var(--danger)' }}>{detectError}</span>}
-          {!detecting && !detected && !detectError && isEdit && <span style={{ fontSize: 13, color: 'var(--muted)' }}>Press \u21bb to re-detect</span>}
-          {!detecting && !detected && !detectError && !isEdit && <span style={{ fontSize: 13, color: 'var(--muted)' }}>Stream will be detected on save</span>}
-        </div>
-        <div className="modal-footer">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={detecting}>Save</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Camera tab ────────────────────────────────────────────────────────────────
-function CameraTab({ config, onConfigChange, showToast }) {
-  const [status, setStatus] = useState(null);
-  const [ts, setTs] = useState(Date.now());
-  const [modal, setModal] = useState(null);
-  const [snapshotLoading, setSnapshotLoading] = useState(false);
-  const seenGenRef = React.useRef(null);
-
-  useEffect(() => {
-    const tick = () => {
-      fetch(`${BASE}/api/status`).then(r => r.json()).then(data => {
-        setStatus(data);
-        const gen = data.pipeline_generation ?? null;
-        if (gen !== null && seenGenRef.current !== null && gen !== seenGenRef.current) {
-          setSnapshotLoading(true);
-        }
-        if (gen !== null) seenGenRef.current = gen;
-        setTs(Date.now());
-      }).catch(() => {});
-    };
-    tick();
-    const id = setInterval(tick, 3000);
-    return () => clearInterval(id);
-  }, []);
-
-  if (!config) return null;
-  const streams = config.streams || [];
-
-  const switchTo = async (name) => {
-    setStatus(s => ({ ...s, active_stream: name, streaming: true }));
-    await fetch(`${BASE}/api/switch`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-  };
-
-  const persist = async (newStreams) => {
-    const newCfg = { ...config, streams: newStreams };
-    const ok = await saveConfig(newCfg);
-    if (ok) { onConfigChange(newCfg); showToast('Saved', true); }
-    else showToast('Save failed', false);
-  };
-
-  const handleSave = (form) => {
-    const newStreams = modal === 'add' ? [...streams, form] : streams.map((s, i) => i === modal ? form : s);
-    persist(newStreams);
-    setModal(null);
-  };
-
-  const handleDelete = (e, idx) => {
-    e.stopPropagation();
-    if (!confirm(`Delete "${streams[idx].stream_name}"?`)) return;
-    persist(streams.filter((_, i) => i !== idx));
-  };
-
-  const active = status?.active_stream;
-
-  return (
-    <div className="content">
-      {config?.video_preview
-        ? <VideoPreview ts={ts} loading={snapshotLoading} onFirstLoad={() => setSnapshotLoading(false)} pipelineGeneration={status?.pipeline_generation ?? null} />
-        : <Snapshot ts={ts} loading={snapshotLoading} onFirstLoad={() => setSnapshotLoading(false)} />
-      }
-      <div className="camera-section">
-        <div className="camera-list">
-          {streams.map((s, i) => {
-            const isActive = s.stream_name === active;
-            return (
-              <div key={i} className={`camera-row${isActive ? ' active' : ''}`} onClick={() => switchTo(s.stream_name)}>
-                <span className="camera-name">{s.stream_name}</span>
-                {isActive && <span className="live-dot">Live</span>}
-                <div className="cam-actions">
-                  <button className="btn btn-ghost" onClick={e => { e.stopPropagation(); setModal(i); }}>Edit</button>
-                  <button className="btn btn-danger" onClick={e => handleDelete(e, i)}>Delete</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <button className="btn-add" onClick={() => setModal('add')}>+ Add Camera</button>
-      </div>
-      {modal !== null && (
-        <CameraModal initial={modal === 'add' ? null : streams[modal]} onSave={handleSave} onClose={() => setModal(null)} />
-      )}
-    </div>
-  );
-}
-
-// ── YouTube stream presets ────────────────────────────────────────────────────
-const YT_RESOLUTIONS = [
-  { label: '360p',    width: 640,  height: 360,  fps: 30 },
-  { label: '480p',    width: 854,  height: 480,  fps: 30 },
-  { label: '720p30',  width: 1280, height: 720,  fps: 30 },
-  { label: '720p60',  width: 1280, height: 720,  fps: 60 },
-  { label: '1080p30', width: 1920, height: 1080, fps: 30 },
-  { label: '1080p60', width: 1920, height: 1080, fps: 60 },
-  { label: '1440p30', width: 2560, height: 1440, fps: 30 },
-  { label: '1440p60', width: 2560, height: 1440, fps: 60 },
-  { label: '4K / 2160p30', width: 3840, height: 2160, fps: 30 },
-  { label: '4K / 2160p60', width: 3840, height: 2160, fps: 60 },
-];
-const YT_BITRATES = [
-  { label: '2 Mbps',  kbps: 2000  },
-  { label: '3 Mbps',  kbps: 3000  },
-  { label: '4 Mbps',  kbps: 4000  },
-  { label: '6 Mbps',  kbps: 6000  },
-  { label: '8 Mbps',  kbps: 8000  },
-  { label: '10 Mbps', kbps: 10000 },
-  { label: '12 Mbps', kbps: 12000 },
-  { label: '15 Mbps', kbps: 15000 },
-  { label: '20 Mbps', kbps: 20000 },
-  { label: '25 Mbps', kbps: 25000 },
-  { label: '30 Mbps', kbps: 30000 },
-  { label: '35 Mbps', kbps: 35000 },
-  { label: '50 Mbps', kbps: 50000 },
-];
-function findResolution(w, h, fps) {
-  return YT_RESOLUTIONS.find(r => r.width === w && r.height === h && r.fps === fps) || null;
-}
-function findBitrate(kbps) {
-  return YT_BITRATES.find(b => b.kbps === kbps) || null;
-}
-
-// ── Settings tab ──────────────────────────────────────────────────────────────
-function SettingsTab({ config, onConfigChange, showToast }) {
-  const [form, setForm] = useState(null);
-  useEffect(() => { if (config) setForm({ ...config }); }, [config]);
-  if (!form) return null;
-
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  const num = (k, v) => set(k, parseInt(v) || 0);
-
-  const handleSave = async () => {
-    const ok = await saveConfig(form);
-    if (ok) { onConfigChange(form); showToast('Saved', true); }
-    else showToast('Save failed', false);
-  };
-
-  return (
-    <div className="content">
-      <div className="settings-content">
-        <div className="card">
-          <h2>Home Assistant</h2>
-          <div className="form-grid">
-            <div className="field field-full"><label>WebSocket URL</label><input value={form.ha_url || ''} onChange={e => set('ha_url', e.target.value)} placeholder="ws://homeassistant:8123/api/websocket" /></div>
-            <div className="field field-full"><label>Long-Lived Access Token</label><input type="password" value={form.ha_token || ''} onChange={e => set('ha_token', e.target.value)} /></div>
-            <div className="field field-full"><label>Entity ID</label><input value={form.ha_entity_id || ''} onChange={e => set('ha_entity_id', e.target.value)} placeholder="input_select.camera_view" /></div>
-          </div>
-        </div>
-        <div className="card">
-          <h2>Advanced</h2>
-          <div className="form-grid">
-            <div className="field"><label>RTSP Latency (ms)</label><input type="number" value={form.rtsp_latency_ms || ''} onChange={e => num('rtsp_latency_ms', e.target.value)} /></div>
-            <div className="field"><label>Reconnect Delay (s)</label><input type="number" value={form.reconnect_delay_sec || ''} onChange={e => num('reconnect_delay_sec', e.target.value)} /></div>
-            <div className="field"><label>Output Stall Timeout (s)</label><input type="number" value={form.output_stall_timeout_sec || ''} onChange={e => num('output_stall_timeout_sec', e.target.value)} /></div>
-            <div className="field"><label>Startup Output Timeout (s)</label><input type="number" value={form.startup_output_timeout_sec || ''} onChange={e => num('startup_output_timeout_sec', e.target.value)} /></div>
-          </div>
-          <div className="toggle-row" style={{ marginTop: 14 }}>
-            <span style={{ fontSize: 14, color: 'var(--text)' }}>Live video preview — experimental (restart addon after changing)</span>
-            <label className="toggle">
-              <input type="checkbox" checked={!!form.video_preview} onChange={e => set('video_preview', e.target.checked)} />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-        </div>
-        <button className="btn btn-primary" onClick={handleSave}>Save Settings</button>
-      </div>
-    </div>
-  );
-}
-
-// ── YouTube tab ───────────────────────────────────────────────────────────────
-function YouTubeTab({ config, onConfigChange, showToast, yt, setYt }) {
-  const [authFlow, setAuthFlow] = useState(null); // {user_code, verification_url}
-  const [polling, setPolling] = useState(false);
-  const [restarting, setRestarting] = useState(false);
-  const [creds, setCreds] = useState({ youtube_client_id: '', youtube_client_secret: '' });
-  const [streamForm, setStreamForm] = useState(null);
-
-  useEffect(() => {
-    if (config) {
-      setCreds({ youtube_client_id: config.youtube_client_id || '', youtube_client_secret: config.youtube_client_secret || '' });
-      setStreamForm({ rtmp_url: config.rtmp_url || '', output_width: config.output_width, output_height: config.output_height, output_framerate: config.output_framerate, video_bitrate_kbps: config.video_bitrate_kbps });
-    }
-  }, [config]);
-
-  // While device flow is active, poll every 5s
-  useEffect(() => {
-    if (!authFlow) return;
-    const id = setInterval(async () => {
-      const r = await fetch(`${BASE}/api/youtube/auth/poll`, { method: 'POST' });
-      const d = await r.json();
-      if (d.ok) {
-        setAuthFlow(null);
-        showToast('YouTube authorised', true);
-        fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {});
-      } else if (!d.pending) {
-        setAuthFlow(null);
-        showToast(d.error || 'Auth failed', false);
-      }
-    }, 5000);
-    return () => clearInterval(id);
-  }, [authFlow]);
-
-  const saveCreds = async () => {
-    setPolling(true);
-    const newCfg = { ...config, ...creds };
-    const ok = await saveConfig(newCfg);
-    setPolling(false);
-    if (ok) { onConfigChange(newCfg); showToast('Saved', true); }
-    else showToast('Save failed', false);
-  };
-
-  const startAuth = async () => {
-    try {
-      const r = await fetch(`${BASE}/api/youtube/auth/start`, { method: 'POST' });
-      const d = await r.json();
-      if (d.error) { showToast(d.error, false); return; }
-      setAuthFlow(d);
-    } catch { showToast('Failed to start auth', false); }
-  };
-
-  const revokeAuth = async () => {
-    if (!confirm('Remove stored refresh token?')) return;
-    try {
-      const r = await fetch(`${BASE}/api/youtube/auth/revoke`, { method: 'POST' });
-      if (!r.ok) throw new Error();
-      showToast('Token removed', true);
-    } catch { showToast('Failed to remove token', false); }
-    fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {});
-  };
-
-  const doRefresh = async () => {
-    await fetch(`${BASE}/api/youtube/poll`, { method: 'POST' });
-    // give the background thread a moment to complete the poll
-    setTimeout(() => fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {}), 2000);
-  };
-
-  const doRestart = async () => {
-    setRestarting(true);
-    try {
-      const r = await fetch(`${BASE}/api/youtube/restart`, { method: 'POST' });
-      const d = await r.json();
-      showToast(d.message || (d.ok ? 'Done' : 'Failed'), d.ok);
-    } catch { showToast('Request failed', false); }
-    setRestarting(false);
-    fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {});
-  };
-
-  const toggleAutoRestart = async (e) => {
-    const enabled = e.target.checked;
-    const r = await fetch(`${BASE}/api/youtube/auto_restart`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
-    if (r.ok) setYt(s => ({ ...s, auto_restart: enabled }));
-  };
-
-  const live = yt?.live;
-  const configured = yt?.configured;
-
-  const currentRes = streamForm ? (findResolution(streamForm.output_width, streamForm.output_height, streamForm.output_framerate) || YT_RESOLUTIONS[0]) : YT_RESOLUTIONS[0];
-  const currentBr  = streamForm ? (findBitrate(streamForm.video_bitrate_kbps) || YT_BITRATES[0]) : YT_BITRATES[0];
-  const setResolution = (label) => { const r = YT_RESOLUTIONS.find(x => x.label === label); if (r) setStreamForm(f => ({ ...f, output_width: r.width, output_height: r.height, output_framerate: r.fps })); };
-  const setBitrate    = (label) => { const b = YT_BITRATES.find(x => x.label === label);    if (b) setStreamForm(f => ({ ...f, video_bitrate_kbps: b.kbps })); };
-  const saveStream = async () => {
-    const newCfg = { ...config, ...streamForm };
-    const ok = await saveConfig(newCfg);
-    if (ok) { onConfigChange(newCfg); showToast('Saved', true); }
-    else showToast('Save failed', false);
-  };
-
-  return (
-    <div className="content">
-      <div className="settings-content">
-
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <h2 style={{ marginBottom: 0 }}>Broadcast Status</h2>
-            <span className={`yt-status-badge ${ytBadge(yt).cls}`}>{ytBadge(yt).label}</span>
-          </div>
-          {configured && yt?.checked_at && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 6 }}>Checked with YouTube {fmtElapsed(yt.checked_at)} ago</div>}
-          {yt?.title && <div style={{ fontSize: 14, color: 'var(--text)', marginBottom: 4 }}>{yt.title}</div>}
-          {live && yt?.started_at && <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 4 }}>Started {fmtTime(yt.started_at)} &middot; {fmtElapsed(yt.started_at)}</div>}
-          {!live && yt?.ended_at && <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 4 }}>Ended {fmtTime(yt.ended_at)}</div>}
-          {!configured && <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12 }}>Not authorised — complete OAuth setup below.</div>}
-          {live && yt?.stream_issues?.length > 0 && (
-            <div className="issue-list">
-              {yt.stream_issues.map((issue, i) => (
-                <div key={i} className={`issue-row ${issue.severity || 'warning'}`}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0, marginTop: 1 }}><path d="M12 2L1 21h22L12 2zm0 3.5L20.5 19h-17L12 5.5zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>
-                  <span className="issue-reason">{issue.reason || issue.type}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: yt?.last_error ? 10 : 0 }}>
-            <button className="btn btn-primary" onClick={doRestart} disabled={restarting || !configured}>
-              {restarting ? 'Restarting\u2026' : 'Restart Broadcast'}
-            </button>
-            <button className="btn btn-ghost" onClick={doRefresh}>Refresh</button>
-          </div>
-          {yt?.last_error && <div style={{ fontSize: 13, color: 'var(--danger)', marginTop: 8, wordBreak: 'break-word' }}>{yt.last_error}</div>}
-          {configured && yt?.quota_budget > 0 && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>API quota used today: ~{yt.quota_used} / {yt.quota_budget} units (estimate, resets midnight Pacific)</div>}
-          <div className="toggle-row" style={{ marginTop: 14 }}>
-            <span style={{ fontSize: 14, color: 'var(--text)' }}>Auto-restart when broadcast stops</span>
-            <label className="toggle">
-              <input type="checkbox" checked={yt?.auto_restart || false} onChange={toggleAutoRestart} disabled={!configured} />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-        </div>
-
-        {streamForm && <div className="card">
-          <h2>Stream Output</h2>
-          <div className="form-grid" style={{ marginBottom: 12 }}>
-            <div className="field field-full"><label>RTMP URL</label><input value={streamForm.rtmp_url} onChange={e => setStreamForm(f => ({ ...f, rtmp_url: e.target.value }))} placeholder="rtmp://a.rtmp.youtube.com/live2/..." /></div>
-            <div className="field">
-              <label>Resolution</label>
-              <select value={currentRes.label} onChange={e => setResolution(e.target.value)}>
-                {YT_RESOLUTIONS.map(r => <option key={r.label} value={r.label}>{r.label}</option>)}
-              </select>
-            </div>
-            <div className="field">
-              <label>Video Bitrate</label>
-              <select value={currentBr.label} onChange={e => setBitrate(e.target.value)}>
-                {YT_BITRATES.map(b => <option key={b.label} value={b.label}>{b.label}</option>)}
-              </select>
-            </div>
-          </div>
-          <button className="btn btn-ghost" onClick={saveStream}>Save</button>
-        </div>}
-
-        <div className="card">
-          <h2>OAuth Credentials</h2>
-          <div className="form-grid" style={{ marginBottom: 12 }}>
-            <div className="field field-full"><label>Client ID</label><input value={creds.youtube_client_id} onChange={e => setCreds(c => ({ ...c, youtube_client_id: e.target.value }))} placeholder="xxxxxx.apps.googleusercontent.com" /></div>
-            <div className="field field-full"><label>Client Secret</label><input type="password" value={creds.youtube_client_secret} onChange={e => setCreds(c => ({ ...c, youtube_client_secret: e.target.value }))} /></div>
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn btn-ghost" onClick={saveCreds} disabled={polling}>Save Credentials</button>
-            {!configured
-              ? <button className="btn btn-primary" onClick={startAuth} disabled={!creds.youtube_client_id || !creds.youtube_client_secret}>Authorise\u2026</button>
-              : <button className="btn btn-danger" onClick={revokeAuth}>Remove Token</button>
-            }
-          </div>
-          {authFlow && (
-            <div style={{ marginTop: 16, padding: '14px 16px', background: 'var(--surface2)', borderRadius: 8, border: '1px solid var(--border)' }}>
-              <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 4 }}>Open this URL on any device and enter the code:</div>
-              <div className="yt-auth-url">{authFlow.verification_url}</div>
-              <div className="yt-auth-code">{authFlow.user_code}</div>
-              <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>Waiting for approval\u2026</div>
-            </div>
-          )}
-        </div>
-
-        <div className="card">
-          <h2>Setup Instructions</h2>
-          <ol style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.7, paddingLeft: 16 }}>
-            <li>Go to Google Cloud Console and create a project</li>
-            <li>Enable <strong style={{ color: 'var(--text)' }}>YouTube Data API v3</strong></li>
-            <li>Create OAuth 2.0 credentials &mdash; type: <strong style={{ color: 'var(--text)' }}>TV and Limited Input</strong></li>
-            <li>Enter Client ID and Client Secret above, then click Save</li>
-            <li>Click <strong style={{ color: 'var(--text)' }}>Authorise</strong> and follow the device flow</li>
-          </ol>
-        </div>
-
-      </div>
-    </div>
-  );
-}
-
-// ── Shared ────────────────────────────────────────────────────────────────────
-async function saveConfig(cfg) {
-  try {
-    const r = await fetch(`${BASE}/api/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
-    return r.ok;
-  } catch { return false; }
-}
-
-// ── App ───────────────────────────────────────────────────────────────────────
-function App() {
-  const [tab, setTab] = useState('cameras');
-  const [config, setConfig] = useState(null);
-  const [toast, setToast] = useState(null);
-  const [yt, setYt] = useState(null);
-
-  useEffect(() => {
-    fetch(`${BASE}/api/config`).then(r => r.json()).then(setConfig).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    // Local endpoint (no YouTube API cost) — poll often so the UI never trails the server's state
-    const tick = () => fetch(`${BASE}/api/youtube/status`).then(r => r.json()).then(setYt).catch(() => {});
-    tick();
-    const id = setInterval(tick, 3000);
-    return () => clearInterval(id);
-  }, []);
-
-  const showToast = useCallback((msg, ok) => {
-    setToast({ msg, ok });
-    setTimeout(() => setToast(null), 3000);
-  }, []);
-
-  return (
-    <>
-      <div className="tabbar">
-        <div className={`tab${tab === 'cameras' ? ' active' : ''}`} onClick={() => setTab('cameras')} title="Cameras"><IconCamera /></div>
-        <div className={`tab${tab === 'youtube' ? ' active' : ''}`} onClick={() => setTab('youtube')} title="YouTube"><IconYouTube /></div>
-        <div className={`tab${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')} title="Settings"><IconSettings /></div>
-      </div>
-      <YtStrip yt={yt} />
-      {tab === 'cameras'  && <CameraTab config={config} onConfigChange={setConfig} showToast={showToast} />}
-      {tab === 'youtube'  && <YouTubeTab config={config} onConfigChange={setConfig} showToast={showToast} yt={yt} setYt={setYt} />}
-      {tab === 'settings' && <SettingsTab config={config} onConfigChange={setConfig} showToast={showToast} />}
-      <Toast toast={toast} />
-    </>
-  );
-}
-
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-</script>
-</body>
-</html>"""
+# The page shell (web/index.html) and the UI bundle (web/dist/app.js, built from web/src/app.jsx by
+# `npm run build` in the Docker image) are served from disk; nothing is loaded from a CDN.
+_WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+_WEB_BUNDLE = os.path.join(_WEB_DIR, "dist", "app.js")
+
+
+def _webui_page(embed: bool):
+    if not os.path.exists(_WEB_BUNDLE):
+        return ("Web UI not built: run `npm ci && npm run build` in rtsp_switcher/web "
+                "(the Docker image does this automatically).", 500, {"Content-Type": "text/plain; charset=utf-8"})
+    with open(os.path.join(_WEB_DIR, "index.html"), encoding="utf-8") as f:
+        html = f.read()
+    ingress_path = request.headers.get("X-Ingress-Path", "")
+    script = f"window.INGRESS_PATH={json.dumps(ingress_path)};" + ("window.EMBED_MODE=true;" if embed else "")
+    html = html.replace("<!--INGRESS_PATH-->", f"<script>{script}</script>")
+    return html, 200, {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache"}
 
 _flask_app = Flask(__name__)
+# Ping websocket clients so a closed tab (or dead connection) is noticed even when no frames flow
+_flask_app.config["SOCK_SERVER_OPTIONS"] = {"ping_interval": 10}
 _sock = _Sock(_flask_app)
 _manager_ref = None
 _ha_listener_ref = None
 _youtube_manager_ref: YouTubeManager | None = None
 _yt_device_flow_state: dict = {}  # device_code while auth is in progress
 _SERVER_MANAGED_KEYS = ("youtube_refresh_token", "youtube_auto_restart")
+# Never sent to the browser. GET blanks them and lists the ones that are set in _saved_secrets;
+# a blank value in POST keeps the saved one. (The refresh token is server-managed and never sent.)
+_SECRET_KEYS = ("ha_token", "youtube_client_secret")
+_NEVER_SENT_KEYS = ("youtube_refresh_token",)
+
+# Under the HA Supervisor, only HA's ingress proxy (which does HA's login) may use the web UI/API,
+# not other containers on the hassio network. Not enforced when run outside HA (Dockerfile.local).
+_INGRESS_PROXY_ADDR = "172.30.32.2"
+_ENFORCE_INGRESS = bool(os.environ.get("SUPERVISOR_TOKEN"))
+
+
+@_flask_app.before_request
+def _only_from_ingress():
+    if _ENFORCE_INGRESS and request.remote_addr not in (_INGRESS_PROXY_ADDR, "127.0.0.1", "::1"):
+        abort(403)
 
 
 @_flask_app.route("/")
 def _webui_index():
-    ingress_path = request.headers.get("X-Ingress-Path", "")
-    html = _WEBUI_HTML.replace(
-        "<!--INGRESS_PATH-->",
-        f"<script>window.INGRESS_PATH={json.dumps(ingress_path)};</script>",
-    )
-    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    return _webui_page(embed=False)
 
 
 @_flask_app.route("/embed")
 def _webui_embed():
-    ingress_path = request.headers.get("X-Ingress-Path", "")
-    html = _WEBUI_HTML.replace(
-        "<!--INGRESS_PATH-->",
-        f"<script>window.INGRESS_PATH={json.dumps(ingress_path)};window.EMBED_MODE=true;</script>",
-    )
-    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    return _webui_page(embed=True)
+
+
+@_flask_app.route("/app.js")
+def _webui_bundle():
+    # Revalidated on every load (ETag), so an addon update is picked up immediately
+    return send_file(_WEB_BUNDLE, mimetype="text/javascript", max_age=0)
 
 
 @_flask_app.route("/api/config")
 def _api_config_get():
-    return jsonify(_get_cfg())
+    cfg = dict(_get_cfg())
+    for key in _NEVER_SENT_KEYS:
+        cfg.pop(key, None)
+    cfg["_saved_secrets"] = [k for k in _SECRET_KEYS if cfg.get(k)]
+    for key in _SECRET_KEYS:
+        cfg[key] = ""
+    return jsonify(cfg)
 
 
 @_flask_app.route("/api/config", methods=["POST"])
@@ -1617,22 +732,90 @@ def _api_config_post():
             new_cfg[key] = current[key]
         else:
             new_cfg.pop(key, None)
+    new_cfg.pop("_saved_secrets", None)
+    for key in _SECRET_KEYS:  # blank = keep the saved secret (the browser never has it)
+        if not new_cfg.get(key):
+            if current.get(key):
+                new_cfg[key] = current[key]
+            else:
+                new_cfg.pop(key, None)
+    for key, (lo, hi, default) in _NUMERIC_SETTINGS.items():
+        if key not in new_cfg or new_cfg[key] is None:
+            new_cfg[key] = current.get(key, default)
+            continue
+        v = new_cfg[key]
+        if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+            return jsonify({"error": f"{key} must be a whole number from {lo} to {hi}", "field": key}), 400
+
+    m = _manager_ref
+    on_air = m.current_stream if m else None
+    new_on_air = on_air
+    old_names = [st.get("stream_name") for st in current.get("streams", [])]
+    new_names = [st.get("stream_name") for st in new_cfg.get("streams", [])]
+    if on_air is not None and on_air not in new_names:
+        # Renamed (same URL, or same position when only edits happened) or removed?
+        old_streams, new_streams = current.get("streams", []), new_cfg.get("streams", [])
+        old_active = next((st for st in old_streams if st.get("stream_name") == on_air), None)
+        match = None
+        if old_active is not None:
+            match = next((st for st in new_streams if st.get("stream_url") == old_active.get("stream_url")), None)
+            if match is None and len(new_streams) == len(old_streams):
+                match = new_streams[old_streams.index(old_active)]
+        if match is None:
+            return jsonify({"error": f"{on_air} is on air — switch to another camera before removing it"}), 409
+        new_on_air = match.get("stream_name")
+    restart = _pipeline_affected(current, new_cfg, on_air, new_on_air)
     try:
         _save_config(new_cfg)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-    if _manager_ref:
-        _manager_ref.restart()
-    return jsonify({"ok": True})
+    if m:
+        if new_on_air != on_air:
+            m.rename_stream(on_air, new_on_air)
+        if restart:
+            m.restart()
+    if new_names != old_names and _ha_listener_ref:
+        _ha_listener_ref.resync()
+    return jsonify({"ok": True, "restarted": restart})
+
+
+# (min, max, default) — values outside these break the pipeline, e.g. a 0s stall timeout restarts it every second
+_NUMERIC_SETTINGS = {
+    "rtsp_latency_ms": (0, 5000, 200),
+    "reconnect_delay_sec": (1, 60, 2),
+    "output_stall_timeout_sec": (5, 120, 10),
+    "startup_output_timeout_sec": (10, 300, 20),
+}
+
+
+# Settings the running pipeline is built from; changing any of these (or the on-air camera's own
+# settings) needs a pipeline restart, which briefly interrupts the YouTube stream
+_PIPELINE_KEYS = (
+    "rtmp_url", "output_width", "output_height", "output_framerate", "video_bitrate_kbps",
+    "rtsp_latency_ms", "video_preview", "output_stall_timeout_sec", "startup_output_timeout_sec",
+)
+
+
+def _pipeline_affected(old_cfg: dict, new_cfg: dict, old_name: str | None, new_name: str | None) -> bool:
+    if any(old_cfg.get(k) != new_cfg.get(k) for k in _PIPELINE_KEYS):
+        return True
+
+    def settings(cfg, name):
+        st = next((x for x in cfg.get("streams", []) if x.get("stream_name") == name), None)
+        return None if st is None else {k: v for k, v in st.items() if k != "stream_name"}
+
+    return settings(old_cfg, old_name) != settings(new_cfg, new_name)
 
 
 @_flask_app.route("/api/snapshot")
 def _api_snapshot():
     with _snapshot_lock:
-        data = _latest_snapshot
-    if data is None:
+        data, gen = _latest_snapshot, _snapshot_gen
+    # Never serve a frame from a camera other than the one currently selected
+    m = _manager_ref
+    if data is None or m is None or m.current_stream is None or m.stream_for_generation(gen) != m.current_stream:
         abort(503)
-    return Response(data, mimetype="image/jpeg")
+    return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @_flask_app.route("/api/switch", methods=["POST"])
@@ -1642,15 +825,17 @@ def _api_switch():
     if not name:
         return jsonify({"error": "name required"}), 400
 
+    if name not in [st.get("stream_name") for st in _get_cfg().get("streams", [])]:
+        return jsonify({"error": f"Unknown camera: {name}"}), 404
+
+    # Switch here directly (HA's echo of the change is then a no-op) and mirror it to HA's input_select
+    if _manager_ref:
+        _manager_ref.switch_stream(name)
     if _ha_listener_ref:
         try:
             _ha_listener_ref.select_option(name)
-            return jsonify({"ok": True})
         except Exception:
-            pass  # fall through to direct switch
-
-    if _manager_ref:
-        _manager_ref.switch_stream(name)
+            pass  # already logged; the local switch has happened regardless
     return jsonify({"ok": True})
 
 
@@ -1700,7 +885,18 @@ def _api_status():
     m = _manager_ref
     stream = m.current_stream if m else None
     gen = m.pipeline_generation if m else 0
-    return jsonify({"active_stream": stream, "streaming": stream is not None, "pipeline_generation": gen})
+    with _snapshot_lock:
+        snap_gen, captured_at = _snapshot_gen, _snapshot_captured_at
+    snap_stream = m.stream_for_generation(snap_gen) if m else None
+    # Only describe a snapshot that belongs to the selected camera; age is computed here so
+    # browser clock skew can't make a stale frame look fresh
+    snapshot = None
+    if stream is not None and snap_stream == stream and captured_at:
+        snapshot = {"stream": snap_stream, "id": captured_at, "age_sec": round(time.time() - captured_at, 1)}
+    on_air, selected_state = m.camera_state() if m else (None, None)
+    return jsonify({"active_stream": stream, "streaming": stream is not None,
+                    "on_air_stream": on_air, "selected_state": selected_state,
+                    "pipeline_generation": gen, "snapshot": snapshot})
 
 
 @_flask_app.route("/api/youtube/status")
@@ -1779,6 +975,10 @@ def _api_youtube_restart():
     m = _youtube_manager_ref
     if not m:
         return jsonify({"error": "YouTube manager not running"}), 503
+    # YouTube can't go live without incoming video: refuse instead of spending quota on a restart
+    # that fails ~2 minutes later and leaves the broadcast stuck in 'testing'
+    if not (_manager_ref and _manager_ref.output_active):
+        return jsonify({"ok": False, "message": "No video is being sent to YouTube — restart once the camera is streaming"}), 409
     ok, msg = m.restart_broadcast()
     return jsonify({"ok": ok, "message": msg})
 
@@ -1806,17 +1006,26 @@ def _api_youtube_auto_restart():
 
 
 @_sock.route('/ws/video')
+class _VideoClient(_queue_mod.Queue):
+    """Per-browser frame queue. needs_key: skip delta frames until the next keyframe, set on connect
+    and whenever a frame had to be dropped for this browser."""
+    def __init__(self):
+        super().__init__(maxsize=30)
+        self.needs_key = True
+
+
 def _ws_video(ws):
-    client_q = _queue_mod.Queue(maxsize=30)
+    client_q = _VideoClient()
     with _video_clients_lock:
         _video_clients.append(client_q)
     try:
         while True:
             try:
-                msg = client_q.get(timeout=10)
+                msg = client_q.get(timeout=5)
                 ws.send(msg)
             except _queue_mod.Empty:
-                pass  # no frame yet, keep connection open
+                if not ws.connected:  # browser went away while no frames were flowing
+                    break
     except Exception:
         pass
     finally:
@@ -1831,20 +1040,36 @@ def _drain_video_frames(video_queue):
     """Daemon thread: reads H.264 frames from video_queue, broadcasts to all WS clients."""
     while True:
         try:
-            msg = video_queue.get(timeout=5)
+            generation, is_keyframe, pts_us, data = video_queue.get(timeout=5)
         except Exception:
             continue
+        # Tag every frame with its pipeline generation and camera so the browser never labels
+        # video with the wrong camera (looked up per frame so a rename applies immediately)
+        m = _manager_ref
+        name = ((m.stream_for_generation(generation) if m else None) or "").encode()[:65535]
+        # Wire format: [1B: 0x01=keyframe/0x00=delta][8B: PTS µs][4B: generation][2B: name length]
+        #              [name UTF-8][Annex-B H.264]  (integers big-endian)
+        msg = ((b'\x01' if is_keyframe else b'\x00') + pts_us.to_bytes(8, 'big')
+               + (generation & 0xFFFFFFFF).to_bytes(4, 'big') + len(name).to_bytes(2, 'big') + name + data)
         with _video_clients_lock:
             clients = list(_video_clients)
-        for client_q in clients:
+        for client in clients:
+            if client.needs_key and not is_keyframe:
+                continue
             try:
-                client_q.put_nowait(msg)
+                client.put_nowait(msg)
+                client.needs_key = False
             except _queue_mod.Full:
-                try:
-                    client_q.get_nowait()   # drop oldest
-                    client_q.put_nowait(msg)
-                except Exception:
-                    pass
+                # Browser can't keep up: discard its backlog (every queued delta depends on the one
+                # before it) and restart it at the next keyframe; keep this frame if it is one
+                while True:
+                    try:
+                        client.get_nowait()
+                    except _queue_mod.Empty:
+                        break
+                client.needs_key = not is_keyframe
+                if is_keyframe:
+                    client.put_nowait(msg)
 
 
 def _start_webserver():
@@ -1859,6 +1084,12 @@ def _start_webserver():
 
 def _quote_uri(uri):
     return '"' + uri.replace('"', '\\"') + '"'
+
+
+def _preview_available(stream: dict, cfg: dict) -> bool:
+    """The live preview branch is only built for H.264 cameras (the browser decodes H.264 only).
+    Mirrored by previewAvailable() in the web UI."""
+    return bool(cfg.get("video_preview", False)) and stream.get("stream_codec", "h264").lower() == "h264"
 
 
 def _build_pipeline_string(stream: dict, hwaccel: str, cfg: dict) -> str:
@@ -1892,12 +1123,12 @@ def _build_pipeline_string(stream: dict, hwaccel: str, cfg: dict) -> str:
     w, h, fr = cfg["output_width"], cfg["output_height"], cfg["output_framerate"]
 
     # Add preview tee for H.264 streams when video_preview is enabled
-    preview_enabled = cfg.get("video_preview", False) and codec == "h264"
+    preview_enabled = _preview_available(stream, cfg)
     parse0_suffix = " ! tee name=t_h264" if preview_enabled else ""
 
     parts = [
         f"rtspsrc name=src0 location={_quote_uri(stream['stream_url'])} "
-        f"protocols=tcp tcp-timeout=30000000 latency={cfg['rtsp_latency_ms']} ! "
+        f"protocols=tcp tcp-timeout=30000000 latency={cfg.get('rtsp_latency_ms', 200)} ! "
         "queue name=qsrc0 ! "
         f"{depay} name=depay0 ! {parser_in} name=parse0{parse0_suffix} ! "
         "queue name=preq0 ! "
@@ -1922,15 +1153,17 @@ def _build_pipeline_string(stream: dict, hwaccel: str, cfg: dict) -> str:
     ]
     if preview_enabled:
         parts.append(
+            # The leaky queue is the only place this branch drops frames (so it can never stall the
+            # RTMP output); it flags the next buffer DISCONT, which _video_loop uses to resync
             "t_h264. ! queue name=prevq max-size-buffers=5 leaky=downstream ! "
             "h264parse config-interval=-1 ! "
             "video/x-h264,stream-format=byte-stream,alignment=au ! "
-            "appsink name=prevsink emit-signals=false max-buffers=5 drop=true"
+            "appsink name=prevsink emit-signals=false max-buffers=30 drop=false"
         )
     return " ".join(parts)
 
 
-def _snapshot_loop(pipeline, snapshot_queue):
+def _snapshot_loop(pipeline, snapshot_queue, generation):
     """Runs as a daemon thread inside the worker process."""
     import gi
     gi.require_version("Gst", "1.0")
@@ -1956,12 +1189,12 @@ def _snapshot_loop(pipeline, snapshot_queue):
                 except Exception:
                     break
             try:
-                snapshot_queue.put_nowait(data)
+                snapshot_queue.put_nowait((generation, time.time(), data))
             except Exception:
                 pass
 
 
-def _video_loop(pipeline, video_queue):
+def _video_loop(pipeline, video_queue, generation):
     """Runs as a daemon thread inside the worker process. Pulls H.264 frames from prevsink."""
     import gi
     gi.require_version("Gst", "1.0")
@@ -1971,12 +1204,19 @@ def _video_loop(pipeline, video_queue):
     if prevsink is None:
         return  # preview not in this pipeline build
 
+    # Delta frames only make sense after every frame before them, so after any dropped frame skip
+    # ahead to the next keyframe: the browser freezes briefly instead of decoding a smeared picture
+    needs_key = True
     while True:
         sample = prevsink.emit("try-pull-sample", Gst.SECOND // 2)
         if sample is None:
             continue
         buf = sample.get_buffer()
         is_keyframe = not buf.has_flags(Gst.BufferFlags.DELTA_UNIT)
+        if buf.has_flags(Gst.BufferFlags.DISCONT):  # frames were dropped upstream (leaky prevq)
+            needs_key = True
+        if needs_key and not is_keyframe:
+            continue
         pts_ns = buf.pts
         pts_us = pts_ns // 1000 if pts_ns != Gst.CLOCK_TIME_NONE else 0
         ok, info = buf.map(Gst.MapFlags.READ)
@@ -1986,15 +1226,15 @@ def _video_loop(pipeline, video_queue):
             data = bytes(info.data)
         finally:
             buf.unmap(info)
-        # Wire format: [1B: 0x01=keyframe/0x00=delta][8B: PTS µs big-endian][N B: Annex-B H.264]
-        msg = (b'\x01' if is_keyframe else b'\x00') + pts_us.to_bytes(8, 'big') + data
         try:
-            video_queue.put_nowait(msg)
+            video_queue.put_nowait((generation, is_keyframe, pts_us, data))
+            needs_key = False
         except Exception:
-            pass  # drop if queue full
+            needs_key = True  # queue full: this frame is lost, resync at the next keyframe
 
 
-def pipeline_worker(stream: dict, cfg: dict, snapshot_queue, video_queue, last_output_shared, first_output_shared):
+def pipeline_worker(stream: dict, cfg: dict, generation: int, snapshot_queue, video_queue,
+                    last_output_shared, first_output_shared):
     """Runs in a child process. Owns GStreamer entirely."""
     import gi
     gi.require_version("Gst", "1.0")
@@ -2092,8 +1332,8 @@ def pipeline_worker(stream: dict, cfg: dict, snapshot_queue, video_queue, last_o
 
     pipeline.set_state(Gst.State.PLAYING)
 
-    threading.Thread(target=_snapshot_loop, args=(pipeline, snapshot_queue), daemon=True).start()
-    threading.Thread(target=_video_loop, args=(pipeline, video_queue), daemon=True).start()
+    threading.Thread(target=_snapshot_loop, args=(pipeline, snapshot_queue, generation), daemon=True).start()
+    threading.Thread(target=_video_loop, args=(pipeline, video_queue, generation), daemon=True).start()
 
     try:
         loop.run()
@@ -2113,9 +1353,19 @@ class HomeAssistantListener(threading.Thread):
         self._on_state = on_state
         self._stop = threading.Event()
         self._client = None
+        self._resyncing = False
 
     def stop(self):
         self._stop.set()
+        if self._client and hasattr(self._client, "__exit__"):
+            try:
+                self._client.__exit__(None, None, None)
+            except Exception:
+                pass
+
+    def resync(self):
+        """Camera names changed: reconnect, which re-syncs the input_select options on connect."""
+        self._resyncing = True
         if self._client and hasattr(self._client, "__exit__"):
             try:
                 self._client.__exit__(None, None, None)
@@ -2138,12 +1388,26 @@ class HomeAssistantListener(threading.Thread):
         cfg = _get_cfg()
         stream_names = [s["stream_name"] for s in cfg.get("streams", [])]
         try:
+            before = getattr(self._client.get_state(entity_id=cfg["ha_entity_id"]), "state", None)
+        except Exception:
+            before = None
+        try:
             self._client.trigger_service(
                 "input_select", "set_options",
                 entity_id=cfg["ha_entity_id"],
                 options=stream_names,
             )
             print(f"[ha] Set options on {cfg['ha_entity_id']}: {stream_names}", flush=True)
+            # If HA's selection is no longer an option (e.g. the on-air camera was renamed), HA has just
+            # jumped to the first option — put it back on the camera that's actually on air
+            on_air = _manager_ref.current_stream if _manager_ref else None
+            if before not in stream_names and on_air in stream_names:
+                self._client.trigger_service(
+                    "input_select", "select_option",
+                    entity_id=cfg["ha_entity_id"],
+                    option=on_air,
+                )
+                print(f"[ha] Re-selected {on_air!r} after options changed", flush=True)
         except Exception as exc:
             print(f"[ha] Could not set options on {cfg['ha_entity_id']}: {exc}", flush=True)
 
@@ -2156,6 +1420,7 @@ class HomeAssistantListener(threading.Thread):
                 cfg = _get_cfg()
                 if hasattr(self._client, "__enter__"):
                     self._client.__enter__()
+                self._resyncing = False
                 self._sync_entity()
                 try:
                     state_obj = self._client.get_state(entity_id=cfg["ha_entity_id"])
@@ -2187,6 +1452,10 @@ class HomeAssistantListener(threading.Thread):
             except Exception as exc:
                 if self._stop.is_set():
                     break
+                if self._resyncing:
+                    self._resyncing = False
+                    print("[ha] Reconnecting to sync camera list", flush=True)
+                    continue
                 print(f"[ha] Websocket error: {exc}", flush=True)
                 time.sleep(2)
             finally:
@@ -2211,15 +1480,46 @@ class PipelineManager(threading.Thread):
         self._snapshot_queue = snapshot_queue
         self._video_queue = video_queue
         self._pipeline_generation = 0
+        self._generation_streams: dict[int, str] = {}  # which camera each pipeline generation sent
+        self._selected_at: float = 0.0          # epoch time the current camera was selected
+        self._gen_started_at: float = 0.0       # epoch time the current pipeline generation started
+        self._switched_from: str | None = None  # camera that was selected before it
         # Wall-clock time of the last encoded frame, written by the worker process
         self._last_output = multiprocessing.Value("d", 0.0, lock=False)
         # Wall-clock time of the first encoded frame from the current worker
         self._first_output = multiprocessing.Value("d", 0.0, lock=False)
 
+    def camera_state(self) -> tuple[str | None, str | None]:
+        """(camera whose video is being sent right now or None, state of the selected camera):
+        "on_air", "switching" (no output yet after picking a different camera), "connecting"
+        (addon startup), "reconnecting" (same camera dropped, < 10s), or "no_signal"."""
+        with self._lock:
+            current, gen = self._current_stream, self._pipeline_generation
+            selected_at, switched_from = self._selected_at, self._switched_from
+            gen_started_at = self._gen_started_at
+            gen_stream = self._generation_streams.get(gen)
+            prev_stream = self._generation_streams.get(gen - 1)
+        on_air = gen_stream if self.output_active else None
+        if current is None:
+            return on_air, None
+        if on_air == current:
+            return on_air, "on_air"
+        last = self._last_output.value
+        # Pipelines run one at a time, so output older than this generation came from the previous one
+        last_stream = gen_stream if last >= gen_started_at else prev_stream
+        had_output = last_stream == current and last > selected_at
+        waiting = time.time() - max(selected_at, last)
+        if waiting >= 10:
+            return on_air, "no_signal"
+        if had_output:
+            return on_air, "reconnecting"
+        return on_air, "switching" if switched_from is not None else "connecting"
+
     @property
     def output_active(self) -> bool:
         """True if the pipeline produced output within the last few seconds (i.e. RTMP is being fed)."""
-        return time.time() - self._last_output.value < 3
+        last = self._last_output.value
+        return last >= self._gen_started_at and time.time() - last < 3
 
     @property
     def output_stable_sec(self) -> float:
@@ -2239,6 +1539,20 @@ class PipelineManager(threading.Thread):
         with self._lock:
             return self._current_stream
 
+    def stream_for_generation(self, generation: int) -> str | None:
+        with self._lock:
+            return self._generation_streams.get(generation)
+
+    def rename_stream(self, old: str, new: str):
+        """The on-air camera was renamed: keep it selected under its new name, without a restart."""
+        with self._lock:
+            if self._current_stream == old:
+                self._current_stream = new
+            for gen, name in self._generation_streams.items():
+                if name == old:
+                    self._generation_streams[gen] = new
+        print(f"[manager] Camera {old!r} renamed to {new!r}", flush=True)
+
     def switch_stream(self, name):
         cfg = _get_cfg()
         stream_names = [s["stream_name"] for s in cfg.get("streams", [])]
@@ -2248,7 +1562,9 @@ class PipelineManager(threading.Thread):
         with self._lock:
             if self._current_stream == name:
                 return
+            self._switched_from = self._current_stream
             self._current_stream = name
+            self._selected_at = time.time()
         print(f"[manager] Switching to {name!r}", flush=True)
         self._terminate_current()
 
@@ -2289,7 +1605,9 @@ class PipelineManager(threading.Thread):
                 streams = cfg.get("streams", [])
                 if streams:
                     with self._lock:
+                        self._switched_from = None
                         self._current_stream = streams[0]["stream_name"]
+                        self._selected_at = time.time()
                 else:
                     self._stopping.wait(2)
                 continue
@@ -2307,9 +1625,17 @@ class PipelineManager(threading.Thread):
                     break
 
             self._first_output.value = 0.0
+            with self._lock:
+                self._pipeline_generation += 1
+                generation = self._pipeline_generation
+                # Output from a previous pipeline (older than this) never counts as this one's
+                self._gen_started_at = time.time()
+                self._generation_streams[generation] = stream_name
+                for old_gen in [g for g in self._generation_streams if g < generation - 10]:
+                    del self._generation_streams[old_gen]
             p = multiprocessing.Process(
                 target=pipeline_worker,
-                args=(stream, cfg, self._snapshot_queue, self._video_queue,
+                args=(stream, cfg, generation, self._snapshot_queue, self._video_queue,
                       self._last_output, self._first_output),
                 name=f"pipeline-{stream_name}",
             )
@@ -2317,7 +1643,6 @@ class PipelineManager(threading.Thread):
             print(f"[manager] Started pipeline process {p.pid} for {stream_name!r}", flush=True)
             with self._lock:
                 self._process = p
-                self._pipeline_generation += 1
 
             p.join()
 
@@ -2347,12 +1672,12 @@ def main():
     video_queue = multiprocessing.Queue(maxsize=15)
 
     def _drain_snapshots():
-        global _latest_snapshot
+        global _latest_snapshot, _snapshot_gen, _snapshot_captured_at
         while True:
             try:
-                data = snapshot_queue.get(timeout=5)
+                gen, captured_at, data = snapshot_queue.get(timeout=5)
                 with _snapshot_lock:
-                    _latest_snapshot = data
+                    _latest_snapshot, _snapshot_gen, _snapshot_captured_at = data, gen, captured_at
             except Exception:
                 pass
 
@@ -2364,6 +1689,8 @@ def main():
     _manager_ref = manager
     manager.start()
 
+    print("[web] Accepting requests only from Home Assistant ingress" if _ENFORCE_INGRESS
+          else "[web] Not running under Home Assistant — accepting requests from any address", flush=True)
     threading.Thread(target=_start_webserver, daemon=True).start()
 
     global _youtube_manager_ref

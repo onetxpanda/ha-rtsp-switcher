@@ -3,3 +3,5 @@ CONTEXT.md
 __pycache__/
 *.pyc
 rtsp_switcher/settings.yaml
+rtsp_switcher/web/node_modules/
+rtsp_switcher/web/dist/

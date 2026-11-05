@@ -1,3 +1,11 @@
+# Build the web UI (web/src/app.jsx + React) into one bundle; versions pinned by web/package-lock.json
+FROM node:22.12.0-alpine AS webui
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/src ./src
+RUN npm run build
+
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -51,6 +59,8 @@ COPY requirements.txt /app/requirements.txt
 RUN pip3 install --break-system-packages -r /app/requirements.txt
 
 COPY rtsp_switcher.py /app/rtsp_switcher.py
+COPY web/index.html /app/web/index.html
+COPY --from=webui /web/dist/app.js /app/web/dist/app.js
 COPY settings.yaml.example /app/settings.yaml.example
 COPY hw-info.sh /usr/local/bin/hw-info
 COPY run.sh /run.sh

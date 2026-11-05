@@ -1,3 +1,19 @@
+## 4.4.0
+- Web UI is now bundled into the addon image (React and the UI code compiled at build time) instead of loading React and the Babel compiler from unpkg.com on every page load: works without internet, loads much faster (~180 KB instead of 3 MB+), and can't change unless the addon is updated
+- The addon's web server only accepts requests from Home Assistant's ingress proxy, and the HA token, YouTube client secret and refresh token are never sent to the browser (secret fields show "Saved — type to replace"; leaving them blank keeps the saved value)
+- YouTube stream settings are now separate Server and Stream key fields; the key is masked with a Show button
+- Camera snapshot shows "Waiting for video from <camera>…" after a switch and a dimmed "No signal — last frame Ns ago" when frames stop, instead of an old frame from the previous camera
+- Camera list shows each camera's real state (On air, Switching…, Connecting…, Reconnecting…, No signal); switching from the UI takes effect immediately and is mirrored to Home Assistant
+- Saving settings only restarts the video when a video setting changed; you're asked first when that would interrupt the YouTube stream. Renaming the on-air camera no longer restarts it, and the on-air camera can't be deleted
+- Settings are validated (with allowed ranges shown) so values like a 0s stall timeout can't be saved; unsaved edits survive switching tabs and are marked with a dot on the tab
+- "Lost connection to the addon" banner, with the page greyed out as last known state, when the addon stops answering
+- Restart Broadcast is disabled while no video is being sent (the server refuses it too), and the result is confirmed with a "YouTube is live" or error message
+- Polling pauses while the page is hidden and refreshes as soon as it's visible again
+- Live preview (experimental): fixed the spinner overlay that stuck after a camera switch, H.265 cameras now fall back to snapshots instead of waiting forever, dropped frames no longer smear the picture, and closed tabs no longer leak a server thread
+- Keyboard and screen-reader support: named tabs, camera rows switchable with Enter/Space, the camera dialog closes on Escape and keeps focus inside, labelled fields and toggles
+- Phone layout: camera status shown under the name, Edit is an icon and Delete moved into the edit dialog, settings fields line up
+- Blank status bar replaced with "YouTube not set up" and a Set up button; resolution and bitrate dropdowns show the actual configured value when it isn't a preset
+
 ## 4.3.1
 - Fix "Invalid transition" when restarting: with the monitor stream enabled (YouTube's default), broadcasts now go ready → testing → live instead of ready → live
 - Reuse the existing broadcast bound to the stream again instead of creating a new one every attempt (keeps title/description/settings and avoids YouTube's limit on creating broadcasts); older leftovers are only deleted after a successful restart
