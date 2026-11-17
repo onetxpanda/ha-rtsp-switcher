@@ -719,8 +719,12 @@ function SettingsTab({ config, onConfigChange, showToast, drafts, setDrafts, yt 
         <div className="card">
           <h2>Home Assistant</h2>
           <div className="form-grid">
-            <div className="field field-full"><label htmlFor="f-websocket-url">WebSocket URL</label><input id="f-websocket-url" value={form.ha_url || ''} onChange={e => set('ha_url', e.target.value)} placeholder="ws://homeassistant:8123/api/websocket" /></div>
-            <div className="field field-full"><label htmlFor="f-long-lived-access-token">Long-Lived Access Token</label><input id="f-long-lived-access-token" type="password" value={form.ha_token || ''} onChange={e => set('ha_token', e.target.value)} placeholder={secretSaved(config, 'ha_token') ? SECRET_PLACEHOLDER : ''} autoComplete="new-password" /></div>
+            {config._ha_via_supervisor ? (
+              <div className="field field-full"><span style={{ fontSize: 13, color: 'var(--muted)' }}>Connected to Home Assistant automatically, through its Supervisor. No URL or token needed.</span></div>
+            ) : (<>
+              <div className="field field-full"><label htmlFor="f-websocket-url">WebSocket URL</label><input id="f-websocket-url" value={form.ha_url || ''} onChange={e => set('ha_url', e.target.value)} placeholder="ws://homeassistant:8123/api/websocket" /></div>
+              <div className="field field-full"><label htmlFor="f-long-lived-access-token">Long-Lived Access Token</label><input id="f-long-lived-access-token" type="password" value={form.ha_token || ''} onChange={e => set('ha_token', e.target.value)} placeholder={secretSaved(config, 'ha_token') ? SECRET_PLACEHOLDER : ''} autoComplete="new-password" /></div>
+            </>)}
             <div className="field field-full"><label htmlFor="f-entity-id">Entity ID</label><input id="f-entity-id" value={form.ha_entity_id || ''} onChange={e => set('ha_entity_id', e.target.value)} placeholder="input_select.camera_view" /></div>
           </div>
         </div>

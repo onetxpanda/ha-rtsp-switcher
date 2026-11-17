@@ -1,3 +1,6 @@
+## 4.5.0
+- Connects to Home Assistant through the Supervisor instead of a WebSocket URL and long-lived token, so it keeps working when Home Assistant's port or HTTPS settings change. The URL and token settings are only shown, and only used, when the app runs outside Home Assistant
+
 ## 4.4.1
 - Fix the page staying blank ("Loading…", empty status bar) in the Home Assistant Companion app until tapped: its WebView can report the page as hidden when it loads, which paused all updates. The page now always loads on open, and only pauses after the browser actually reports it went hidden; focus or any tap counts as visible
 

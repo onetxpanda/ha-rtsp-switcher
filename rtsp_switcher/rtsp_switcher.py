@@ -684,7 +684,20 @@ _NEVER_SENT_KEYS = ("youtube_refresh_token",)
 # Under the HA Supervisor, only HA's ingress proxy (which does HA's login) may use the web UI/API,
 # not other containers on the hassio network. Not enforced when run outside HA (Dockerfile.local).
 _INGRESS_PROXY_ADDR = "172.30.32.2"
-_ENFORCE_INGRESS = bool(os.environ.get("SUPERVISOR_TOKEN"))
+_SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
+_ENFORCE_INGRESS = bool(_SUPERVISOR_TOKEN)
+
+# Under the HA Supervisor, HA is reached through the Supervisor's proxy: no URL or token to set,
+# and it keeps working when HA's port or HTTPS settings change. Outside HA, ha_url/ha_token are used.
+_SUPERVISOR_HA_WS = "ws://supervisor/core/websocket"
+
+
+def _ha_connection(cfg: dict) -> tuple[str, str] | None:
+    if _SUPERVISOR_TOKEN:
+        return _SUPERVISOR_HA_WS, _SUPERVISOR_TOKEN
+    if cfg.get("ha_url") and cfg.get("ha_token"):
+        return cfg["ha_url"], cfg["ha_token"]
+    return None
 
 
 @_flask_app.before_request
@@ -717,6 +730,7 @@ def _api_config_get():
     cfg["_saved_secrets"] = [k for k in _SECRET_KEYS if cfg.get(k)]
     for key in _SECRET_KEYS:
         cfg[key] = ""
+    cfg["_ha_via_supervisor"] = bool(_SUPERVISOR_TOKEN)
     return jsonify(cfg)
 
 
@@ -733,6 +747,7 @@ def _api_config_post():
         else:
             new_cfg.pop(key, None)
     new_cfg.pop("_saved_secrets", None)
+    new_cfg.pop("_ha_via_supervisor", None)
     for key in _SECRET_KEYS:  # blank = keep the saved secret (the browser never has it)
         if not new_cfg.get(key):
             if current.get(key):
@@ -1413,8 +1428,9 @@ class HomeAssistantListener(threading.Thread):
 
     def run(self):
         cfg = _get_cfg()
-        print(f"[ha] Connecting to {cfg['ha_url']}, entity={cfg['ha_entity_id']}", flush=True)
-        self._client = WebsocketClient(cfg["ha_url"], cfg["ha_token"])
+        url, token = _ha_connection(cfg)
+        print(f"[ha] Connecting to {url}, entity={cfg['ha_entity_id']}", flush=True)
+        self._client = WebsocketClient(url, token)
         while not self._stop.is_set():
             try:
                 cfg = _get_cfg()
@@ -1701,7 +1717,7 @@ def main():
 
     cfg = _get_cfg()
     ha_listener = None
-    if cfg.get("ha_url") and cfg.get("ha_token"):
+    if _ha_connection(cfg):
         ha_listener = HomeAssistantListener(manager.switch_stream)
         ha_listener.start()
         global _ha_listener_ref
